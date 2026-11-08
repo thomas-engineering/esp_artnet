@@ -6,6 +6,7 @@ idf_component_register(
         "provisioning.c"
         "ota.c"
         "led.c"
+        "webserver.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
@@ -23,4 +24,5 @@ idf_component_register(
         lwip
         mdns
         led_strip
+        esp_timer
 )

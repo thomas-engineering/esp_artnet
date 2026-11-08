@@ -118,6 +118,24 @@ static void check_and_update(void)
     }
 }
 
+esp_err_t ota_flash_url(const char *url)
+{
+    ESP_LOGI(TAG, "Flashing from URL: %s", url);
+    esp_http_client_config_t http_cfg = {
+        .url               = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .keep_alive_enable = true,
+    };
+    esp_https_ota_config_t ota_cfg = { .http_config = &http_cfg };
+    esp_err_t err = esp_https_ota(&ota_cfg);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "OTA from URL successful");
+    } else {
+        ESP_LOGE(TAG, "OTA from URL failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
 static void ota_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(10000)); /* 10 s startup grace period */

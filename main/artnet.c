@@ -29,6 +29,7 @@ typedef struct __attribute__((packed)) {
 static uint8_t           s_buf[DMX_CHANNELS];
 static SemaphoreHandle_t s_mutex;
 static uint16_t          s_universe;
+static volatile uint32_t s_pkt_count = 0;
 
 static void artnet_task(void *arg)
 {
@@ -72,6 +73,7 @@ static void artnet_task(void *arg)
         memcpy(s_buf, pkt.data, data_len);
         xSemaphoreGive(s_mutex);
         led_artnet_pulse();
+        s_pkt_count++;
     }
 }
 
@@ -82,6 +84,8 @@ void artnet_start(uint16_t universe)
     memset(s_buf, 0, DMX_CHANNELS);
     xTaskCreate(artnet_task, "artnet", 4096, NULL, 5, NULL);
 }
+
+uint32_t artnet_get_pkt_count(void) { return s_pkt_count; }
 
 void artnet_copy_dmx(uint8_t *dst, uint16_t max_len)
 {

@@ -12,6 +12,7 @@
 #include "provisioning.h"
 #include "ota.h"
 #include "led.h"
+#include "webserver.h"
 
 /* GPIO0 = BOOT button on Freenove ESP32-S3-WROOM.
    Hold for 3 s (at any time, not only at power-on) to clear WiFi credentials. */
@@ -95,6 +96,7 @@ void app_main(void)
 
     dmx_init();           /* reconfigures UART0 (GPIO43/44) for DMX after WiFi is up */
     artnet_start(provisioning_get_universe());
+    webserver_start();
     ota_start();
 
     xTaskCreate(boot_button_task, "boot_btn", 2048, NULL, 3, NULL);
