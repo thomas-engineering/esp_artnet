@@ -1,0 +1,4 @@
+dependencies:
+  espressif/mdns: ">=1.0.0"
+  espressif/led_strip: ">=2.0.0"
+  espressif/cjson: ">=1.7.18"

@@ -1,0 +1,8 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+.vscode/
+.clangd
+CLAUDE.md
+python_test_client/__pycache__/

@@ -1,0 +1,4 @@
+# No external packages required — stdlib only (socket, tkinter, threading).
+#
+# Requires Python 3.10+
+# If tkinter is missing on Ubuntu/Debian: sudo apt install python3-tk
