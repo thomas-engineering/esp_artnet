@@ -102,11 +102,45 @@ portal**:
    **http://dmx-artnet.local** (mDNS) or at the IP shown in your router's
    DHCP table (hostname: `dmx-artnet`).
 
-The portal also supports direct RGB testing while in AP mode (sends a single
-short DMX burst — useful to verify wiring before connecting to a network).
-
 **To re-provision:** hold the BOOT button for 3 s at power-on.  The stored
 credentials are erased and the device returns to SoftAP mode.
+
+---
+
+## Web Interface
+
+Once connected, the node serves a status and configuration page at
+**http://dmx-artnet.local/** (or the device's IP address).
+
+![Web status page](doc/screenshot_webui.png)
+
+### Status
+
+The top of the page auto-refreshes every 2 seconds and shows firmware
+version, IP address, WiFi RSSI, active Art-Net universe, incoming packet
+rate, and a live bar graph for DMX channels 1–16.
+
+### Art-Net Settings
+
+A large numeric input with **−** / **+** buttons lets you change the
+Art-Net universe at runtime (0–32767).  Pressing **Save** applies the
+change immediately — no reboot required.
+
+### Network Configuration
+
+Choose between **DHCP (automatic)** and **Static IP**.  Selecting Static IP
+reveals input fields for IPv4 address, netmask, gateway and DNS server.
+Saving network settings restarts the device to apply them.
+
+### Firmware Update
+
+| Method | Description |
+|---|---|
+| **Flash from URL** | Enter an HTTPS URL to a `.bin` file (pre-filled with the latest GitHub release URL) and press **Flash from URL**. |
+| **Upload binary** | Select a local `.bin` file and press **Upload & flash**. |
+
+The device downloads/receives the image, verifies it, writes it to the
+inactive OTA slot, sets it as boot target, and restarts — all over HTTP.
 
 ---
 
@@ -130,10 +164,15 @@ The board has two onboard LEDs that indicate the current state:
 
 ### OTA updates
 
-Every 6 hours the firmware checks the GitHub release page of
+Firmware can be updated in two ways:
+
+**Automatic** — every 6 hours the firmware checks the GitHub release page of
 `thomas-engineering/esp_artnet` for a newer binary.  If a new release is
 found it downloads and verifies the image over HTTPS and reboots into the new
 slot.
+
+**Manual** — use the **Firmware Update** section of the web interface to
+flash a binary from a URL or upload one from disk (see [Web Interface](#web-interface)).
 
 ---
 
@@ -143,6 +182,8 @@ A minimal tkinter GUI is provided in `python_test_client/` to send Art-Net direc
 to the node.  It is designed around the **Showtec LED Par 64 Short Pro RGB
 (order 42427)** — see `doc/42427_Anleitung 42427 Englisch.pdf` for the full
 lamp manual.
+
+![Python test client](doc/screenshot_gui.png)
 
 ### Requirements
 
@@ -161,9 +202,9 @@ python3 gui.py
 
 | Section | Controls |
 |---|---|
-| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, BLACKOUT |
+| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle |
 | **Color** | Red / Green / Blue sliders (Ch 1–3) + live color preview swatch |
-| **6-Channel Settings** | Ch 4 macro, Ch 6 program, Ch 5 strobe/speed/sensitivity |
+| **6-Channel Settings** | Ch 4 macro, Ch 6 program with one-click preset buttons, Ch 5 strobe/speed/sensitivity (label changes with Ch 6 value) |
 | **Status bar** | Resolved IP, packets per second, error count |
 
 The background thread sends at **44 Hz** continuously — no explicit "Send"
@@ -311,21 +352,28 @@ using the Art-Net DMX start address selected in the Python GUI.
 esp_artnet/
 ├── main/
 │   ├── main.c           — app entry point, mDNS init, task creation
-│   ├── provisioning.c   — SoftAP captive portal, WiFi connect, DNS hijack
-│   ├── artnet.c         — UDP receiver, Art-Net parser
+│   ├── provisioning.c   — SoftAP captive portal, WiFi connect, DNS hijack,
+│   │                       NVS-backed universe + network config (DHCP/static IP)
+│   ├── artnet.c         — UDP receiver, Art-Net parser, runtime universe change
 │   ├── dmx.c            — UART0 DMX-512 transmitter
-│   ├── ota.c            — GitHub OTA updater
-│   ├── cJSON.c/.h       — bundled cJSON v1.7.18
+│   ├── ota.c            — automatic GitHub OTA updater (6 h interval)
+│   ├── webserver.c      — status/config web UI, /api/status, /api/config,
+│   │                       /ota/url, /ota/upload
 │   ├── led.c/.h         — WS2812 + GPIO2 status LEDs
 │   ├── CMakeLists.txt
-│   └── idf_component.yml
+│   └── idf_component.yml  — managed components: espressif/cjson, mdns, led_strip
 ├── python_test_client/
 │   ├── artnet.py        — Art-Net UDP sender (stdlib only)
-│   ├── gui.py           — tkinter GUI
+│   ├── gui.py           — tkinter GUI for Showtec LED Par 64 (42427)
 │   └── requirements.txt
 ├── doc/
+│   ├── screenshot_webui.png
+│   ├── screenshot_gui.png
 │   ├── pinout.jpg
 │   └── 42427_Anleitung 42427 Englisch.pdf
+├── .github/workflows/
+│   └── build-release.yml  — builds firmware with ESP-IDF v6.1 and publishes
+│                             a GitHub release with the binary
 ├── partitions.csv
 └── sdkconfig.defaults
 ```
