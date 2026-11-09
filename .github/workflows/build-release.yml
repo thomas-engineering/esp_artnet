@@ -2,6 +2,11 @@ name: Build and Release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_override:
+        description: "Optional tag override (leave empty to use version.txt)"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -12,7 +17,12 @@ jobs:
 
       - name: Read version
         id: ver
-        run: echo "version=v$(cat version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -n "${{ github.event.inputs.tag_override }}" ]; then
+            echo "version=${{ github.event.inputs.tag_override }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=v$(cat version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build firmware with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
