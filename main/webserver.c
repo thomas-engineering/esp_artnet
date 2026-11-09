@@ -19,6 +19,9 @@
 
 static const char *TAG = "webserver";
 
+#define GITHUB_FW_URL \
+    "https://github.com/thomas-engineering/esp_artnet/releases/latest/download/firmware.bin"
+
 /* ── Status page HTML ─────────────────────────────────────────────────── */
 
 static const char STATUS_HTML[] =
@@ -26,8 +29,8 @@ static const char STATUS_HTML[] =
     "<meta charset='utf-8'><title>ArtNet Node</title>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<style>"
-    "body{font-family:sans-serif;max-width:520px;margin:40px auto;padding:0 16px}"
-    "h2,h3{margin-bottom:8px}"
+    "body{font-family:sans-serif;max-width:520px;margin:0 auto;padding:16px}"
+    "h2{margin-bottom:8px}h3{margin:0 0 10px}"
     "table{width:100%;border-collapse:collapse;margin-bottom:16px}"
     "td{padding:6px 8px;border-bottom:1px solid #eee}"
     "td:first-child{color:#666;font-size:.9em;width:45%}"
@@ -37,13 +40,24 @@ static const char STATUS_HTML[] =
     ".bi{position:absolute;bottom:0;width:100%;background:#0070d2;height:0;transition:height .25s}"
     ".bn{font-size:9px;color:#888;margin-top:2px}"
     "hr{border:none;border-top:1px solid #eee;margin:20px 0}"
-    "input[type=text],input[type=file]{width:100%;box-sizing:border-box;padding:8px;"
+    "label{display:block;font-size:.9em;margin-bottom:3px}"
+    "input[type=text],input[type=number],input[type=file]{"
+        "width:100%;box-sizing:border-box;padding:10px 8px;min-height:44px;"
         "margin-bottom:8px;border:1px solid #ccc;border-radius:4px;font-size:1em}"
-    "button{padding:10px 20px;border:none;border-radius:4px;font-size:1em;"
+    "button{min-height:48px;padding:0 20px;border:none;border-radius:4px;font-size:1em;"
         "cursor:pointer;background:#0070d2;color:#fff;margin-bottom:8px}"
     ".s{background:#555}"
     "#msg{margin-top:8px;font-size:.85em}"
     ".ok{color:green}.er{color:red}"
+    "#uvw{display:flex;gap:8px;align-items:stretch;margin-bottom:12px}"
+    "#uvw input{flex:1;text-align:center;font-size:2em;font-weight:bold;"
+        "letter-spacing:.05em;min-height:64px;margin:0;padding:4px}"
+    "#uvw .adj{background:#555;min-width:56px;font-size:1.6em;padding:0;margin:0;flex-shrink:0}"
+    "#uvw .sav{min-width:88px;margin:0;flex-shrink:0}"
+    ".rl{display:flex;align-items:center;gap:12px;padding:12px 0;"
+        "border-bottom:1px solid #f0f0f0;cursor:pointer;margin-bottom:0}"
+    ".rl input[type=radio]{width:22px;height:22px;min-height:0;min-width:0;margin:0;flex-shrink:0}"
+    ".rl span{font-size:1em}"
     "</style></head><body>"
     "<h2>ArtNet DMX Node</h2>"
     "<table>"
@@ -56,9 +70,39 @@ static const char STATUS_HTML[] =
     "<h3>DMX Ch 1&#8211;16</h3>"
     "<div id='dg'></div>"
     "<hr>"
+    "<h3>Art-Net Settings</h3>"
+    "<label for='uv'>Universe (0&#8211;32767)</label>"
+    "<div id='uvw'>"
+      "<button class='adj' type='button' onclick='ud(-1)'>&#8722;</button>"
+      "<input type='number' id='uv' min='0' max='32767' value='0'>"
+      "<button class='adj' type='button' onclick='ud(1)'>+</button>"
+      "<button class='sav' onclick='su()'>Save</button>"
+    "</div>"
+    "<hr>"
+    "<h3>Network Configuration</h3>"
+    "<label class='rl'>"
+      "<input type='radio' name='ipmode' id='nd' value='dhcp' checked onchange='nt()'>"
+      "<span>DHCP (automatic)</span>"
+    "</label>"
+    "<label class='rl' style='margin-bottom:12px'>"
+      "<input type='radio' name='ipmode' id='ns' value='static' onchange='nt()'>"
+      "<span>Static IP</span>"
+    "</label>"
+    "<div id='sf' style='display:none'>"
+      "<label for='sa'>IPv4 Address</label>"
+      "<input type='text' id='sa' placeholder='e.g. 192.168.1.100'>"
+      "<label for='sk'>Netmask</label>"
+      "<input type='text' id='sk' placeholder='e.g. 255.255.255.0'>"
+      "<label for='sg'>Gateway</label>"
+      "<input type='text' id='sg' placeholder='e.g. 192.168.1.1'>"
+      "<label for='sd'>DNS Server</label>"
+      "<input type='text' id='sd' placeholder='e.g. 8.8.8.8'>"
+    "</div>"
+    "<button onclick='sn()'>Save Network</button>"
+    "<hr>"
     "<h3>Firmware Update</h3>"
     "<p><b>Flash from URL</b></p>"
-    "<input type='text' id='url' placeholder='https://&#8230;/firmware.bin'>"
+    "<input type='text' id='url' value='" GITHUB_FW_URL "'>"
     "<button onclick='fu()'>Flash from URL</button>"
     "<hr style='border-style:dashed'>"
     "<p><b>Upload binary</b></p>"
@@ -71,6 +115,7 @@ static const char STATUS_HTML[] =
       "g.innerHTML+='<div class=bc><div class=bo><div class=bi id=f'+i+'></div></div>"
                     "<div class=bn>'+(i+1)+'</div></div>';"
     "}"
+    "var ini=false;"
     "function ref(){"
       "fetch('/api/status').then(function(r){return r.json();}).then(function(d){"
         "document.getElementById('ver').textContent=d.version;"
@@ -84,10 +129,64 @@ static const char STATUS_HTML[] =
           "var f=document.getElementById('f'+i);"
           "if(f)f.style.height=(d.dmx[i]/2.55).toFixed(0)+'%';"
         "}"
+        "if(!ini){"
+          "ini=true;"
+          "document.getElementById('uv').value=d.universe;"
+          "if(d.net_mode==='static'){"
+            "document.getElementById('ns').checked=true;"
+            "document.getElementById('sf').style.display='';"
+            "document.getElementById('sa').value=d.s_ip||'';"
+            "document.getElementById('sk').value=d.s_nm||'';"
+            "document.getElementById('sg').value=d.s_gw||'';"
+            "document.getElementById('sd').value=d.s_dns||'';"
+          "}"
+        "}"
       "}).catch(function(){});"
     "}"
     "ref();setInterval(ref,2000);"
     "function sm(t,ok){var m=document.getElementById('msg');m.textContent=t;m.className=ok?'ok':'er';}"
+    "function nt(){"
+      "document.getElementById('sf').style.display="
+        "document.getElementById('ns').checked?'':'none';"
+    "}"
+    "function ud(d){"
+      "var e=document.getElementById('uv');"
+      "var v=(parseInt(e.value)||0)+d;"
+      "if(v<0)v=0;if(v>32767)v=32767;"
+      "e.value=v;"
+    "}"
+    "function su(){"
+      "var u=parseInt(document.getElementById('uv').value);"
+      "if(isNaN(u)||u<0||u>32767){sm('Invalid universe.',0);return;}"
+      "sm('Saving…','');"
+      "fetch('/api/config',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({universe:u})})"
+      ".then(function(r){return r.json();})"
+      ".then(function(d){sm(d.ok?'Saved!':'Error: '+(d.msg||''),d.ok);})"
+      ".catch(function(){sm('Request failed.',0);});"
+    "}"
+    "function sn(){"
+      "var mode=document.querySelector('input[name=ipmode]:checked').value;"
+      "var o={net_mode:mode};"
+      "if(mode==='static'){"
+        "o.ip=document.getElementById('sa').value.trim();"
+        "o.nm=document.getElementById('sk').value.trim();"
+        "o.gw=document.getElementById('sg').value.trim();"
+        "o.dns=document.getElementById('sd').value.trim();"
+        "if(!o.ip||!o.nm||!o.gw||!o.dns){sm('Fill in all fields.',0);return;}"
+      "}"
+      "sm('Saving…','');"
+      "fetch('/api/config',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify(o)})"
+      ".then(function(r){return r.json();})"
+      ".then(function(d){"
+        "sm(d.ok?(d.restart?'Saved — restarting…':'Saved!'):'Error: '+(d.msg||''),d.ok);"
+        "if(d.ok&&d.restart)setTimeout(function(){location.reload();},5000);"
+      "})"
+      ".catch(function(){sm('Request failed.',0);});"
+    "}"
     "function fu(){"
       "var u=document.getElementById('url').value.trim();"
       "if(!u){sm('Enter a URL.',0);return;}"
@@ -184,18 +283,95 @@ static esp_err_t handle_status(httpd_req_t *req)
                         "%s%u", i ? "," : "", dmx[i]);
     snprintf(dmx_arr + pos, sizeof(dmx_arr) - pos, "]");
 
-    char json[256];
+    /* Network config */
+    net_config_t netcfg;
+    provisioning_get_net_config(&netcfg);
+
+    char json[512];
     snprintf(json, sizeof(json),
              "{\"version\":\"%s\","
              "\"ip\":\"%s\","
              "\"rssi\":%d,"
              "\"universe\":%u,"
              "\"artnet_pps\":%u,"
-             "\"dmx\":%s}",
+             "\"dmx\":%s,"
+             "\"net_mode\":\"%s\","
+             "\"s_ip\":\"%s\","
+             "\"s_nm\":\"%s\","
+             "\"s_gw\":\"%s\","
+             "\"s_dns\":\"%s\"}",
              ver, ip_str, rssi,
-             (unsigned)provisioning_get_universe(), (unsigned)pps, dmx_arr);
+             (unsigned)provisioning_get_universe(), (unsigned)pps, dmx_arr,
+             netcfg.dhcp ? "dhcp" : "static",
+             netcfg.ip, netcfg.netmask, netcfg.gateway, netcfg.dns);
 
     send_json(req, json);
+    return ESP_OK;
+}
+
+/* ── POST /api/config ─────────────────────────────────────────────────── */
+
+static esp_err_t handle_config(httpd_req_t *req)
+{
+    char body[512] = {0};
+    int  len = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (len <= 0) {
+        send_json(req, "{\"ok\":false,\"msg\":\"Empty body\"}");
+        return ESP_OK;
+    }
+    body[len] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        send_json(req, "{\"ok\":false,\"msg\":\"JSON parse error\"}");
+        return ESP_OK;
+    }
+
+    bool restart = false;
+
+    cJSON *univ_item = cJSON_GetObjectItem(root, "universe");
+    if (cJSON_IsNumber(univ_item)) {
+        int u = (int)univ_item->valuedouble;
+        if (u < 0)     u = 0;
+        if (u > 32767) u = 32767;
+        provisioning_save_universe((uint16_t)u);
+        artnet_set_universe((uint16_t)u);
+        ESP_LOGI(TAG, "Universe set to %d", u);
+    }
+
+    cJSON *mode_item = cJSON_GetObjectItem(root, "net_mode");
+    if (cJSON_IsString(mode_item)) {
+        net_config_t cfg = {0};
+        cfg.dhcp = (strcmp(mode_item->valuestring, "dhcp") == 0);
+        if (!cfg.dhcp) {
+            cJSON *ip  = cJSON_GetObjectItem(root, "ip");
+            cJSON *nm  = cJSON_GetObjectItem(root, "nm");
+            cJSON *gw  = cJSON_GetObjectItem(root, "gw");
+            cJSON *dns = cJSON_GetObjectItem(root, "dns");
+            if (!cJSON_IsString(ip) || !cJSON_IsString(nm) ||
+                !cJSON_IsString(gw) || !cJSON_IsString(dns)) {
+                cJSON_Delete(root);
+                send_json(req, "{\"ok\":false,\"msg\":\"Missing IP fields\"}");
+                return ESP_OK;
+            }
+            strlcpy(cfg.ip,      ip->valuestring,  sizeof(cfg.ip));
+            strlcpy(cfg.netmask, nm->valuestring,  sizeof(cfg.netmask));
+            strlcpy(cfg.gateway, gw->valuestring,  sizeof(cfg.gateway));
+            strlcpy(cfg.dns,     dns->valuestring, sizeof(cfg.dns));
+        }
+        provisioning_save_net_config(&cfg);
+        restart = true;
+        ESP_LOGI(TAG, "Network mode set to %s", cfg.dhcp ? "dhcp" : "static");
+    }
+
+    cJSON_Delete(root);
+
+    if (restart) {
+        send_json(req, "{\"ok\":true,\"restart\":true}");
+        xTaskCreate(restart_task, "restart", 1024, NULL, 1, NULL);
+    } else {
+        send_json(req, "{\"ok\":true,\"restart\":false}");
+    }
     return ESP_OK;
 }
 
@@ -328,6 +504,7 @@ void webserver_start(void)
     static const httpd_uri_t routes[] = {
         { .uri = "/",           .method = HTTP_GET,  .handler = handle_root      },
         { .uri = "/api/status", .method = HTTP_GET,  .handler = handle_status    },
+        { .uri = "/api/config", .method = HTTP_POST, .handler = handle_config    },
         { .uri = "/ota/url",    .method = HTTP_POST, .handler = handle_ota_url   },
         { .uri = "/ota/upload", .method = HTTP_POST, .handler = handle_ota_upload },
     };

@@ -87,6 +87,8 @@ void artnet_start(uint16_t universe)
 
 uint32_t artnet_get_pkt_count(void) { return s_pkt_count; }
 
+void artnet_set_universe(uint16_t universe) { s_universe = universe; }
+
 void artnet_copy_dmx(uint8_t *dst, uint16_t max_len)
 {
     uint16_t n = max_len < DMX_CHANNELS ? max_len : DMX_CHANNELS;

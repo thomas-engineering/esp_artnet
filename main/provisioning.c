@@ -19,6 +19,11 @@
 #define NVS_KEY_SSID     "ssid"
 #define NVS_KEY_PASS     "pass"
 #define NVS_KEY_UNIVERSE "universe"
+#define NVS_KEY_IP_MODE  "ip_mode"
+#define NVS_KEY_S_IP     "s_ip"
+#define NVS_KEY_S_NM     "s_nm"
+#define NVS_KEY_S_GW     "s_gw"
+#define NVS_KEY_S_DNS    "s_dns"
 #define AP_SSID_PREFIX  "ARTNET_"
 #define PORTAL_IP       "192.168.4.1"
 #define WIFI_CONN_BIT   BIT0
@@ -30,6 +35,7 @@ static EventGroupHandle_t s_eg;
 static int  s_retry = 0;
 static bool s_sta_connecting = false;
 static httpd_handle_t s_server = NULL;
+static esp_netif_t *s_sta_netif = NULL;
 
 /* ── NVS helpers ──────────────────────────────────────────────────────── */
 
@@ -54,11 +60,47 @@ static void save_credentials(const char *ssid, const char *pass)
     nvs_close(h);
 }
 
-static void save_universe(uint16_t univ)
+void provisioning_save_universe(uint16_t univ)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_u16(h, NVS_KEY_UNIVERSE, univ);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void provisioning_get_net_config(net_config_t *cfg)
+{
+    cfg->dhcp = true;
+    cfg->ip[0] = cfg->netmask[0] = cfg->gateway[0] = cfg->dns[0] = '\0';
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+
+    uint8_t mode = 0;
+    nvs_get_u8(h, NVS_KEY_IP_MODE, &mode);
+    cfg->dhcp = (mode == 0);
+
+    size_t sz;
+    sz = sizeof(cfg->ip);      nvs_get_str(h, NVS_KEY_S_IP,  cfg->ip,      &sz);
+    sz = sizeof(cfg->netmask); nvs_get_str(h, NVS_KEY_S_NM,  cfg->netmask, &sz);
+    sz = sizeof(cfg->gateway); nvs_get_str(h, NVS_KEY_S_GW,  cfg->gateway, &sz);
+    sz = sizeof(cfg->dns);     nvs_get_str(h, NVS_KEY_S_DNS, cfg->dns,     &sz);
+
+    nvs_close(h);
+}
+
+void provisioning_save_net_config(const net_config_t *cfg)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_KEY_IP_MODE, cfg->dhcp ? 0 : 1);
+    if (!cfg->dhcp) {
+        nvs_set_str(h, NVS_KEY_S_IP,  cfg->ip);
+        nvs_set_str(h, NVS_KEY_S_NM,  cfg->netmask);
+        nvs_set_str(h, NVS_KEY_S_GW,  cfg->gateway);
+        nvs_set_str(h, NVS_KEY_S_DNS, cfg->dns);
+    }
     nvs_commit(h);
     nvs_close(h);
 }
@@ -84,10 +126,36 @@ void provisioning_clear(void)
 
 /* ── WiFi event handler ───────────────────────────────────────────────── */
 
+static void apply_static_ip(const net_config_t *cfg)
+{
+    if (!s_sta_netif) return;
+    esp_netif_dhcpc_stop(s_sta_netif);
+
+    esp_netif_ip_info_t ip = {0};
+    ip.ip.addr      = inet_addr(cfg->ip);
+    ip.netmask.addr = inet_addr(cfg->netmask);
+    ip.gw.addr      = inet_addr(cfg->gateway);
+    if (esp_netif_set_ip_info(s_sta_netif, &ip) != ESP_OK)
+        ESP_LOGE(TAG, "Failed to set static IP");
+
+    if (cfg->dns[0]) {
+        esp_netif_dns_info_t dns = {0};
+        dns.ip.type = IPADDR_TYPE_V4;
+        dns.ip.u_addr.ip4.addr = inet_addr(cfg->dns);
+        esp_netif_set_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+    }
+    ESP_LOGI(TAG, "Static IP: %s / %s  gw %s", cfg->ip, cfg->netmask, cfg->gateway);
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (s_sta_connecting) esp_wifi_connect();
+        if (s_sta_connecting) {
+            net_config_t netcfg;
+            provisioning_get_net_config(&netcfg);
+            if (!netcfg.dhcp) apply_static_ip(&netcfg);
+            esp_wifi_connect();
+        }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (!s_sta_connecting) return;
         if (s_retry < MAX_RETRIES) {
@@ -397,7 +465,7 @@ static esp_err_t handle_save(httpd_req_t *req)
     httpd_resp_send(req, resp_html, HTTPD_RESP_USE_STRLEN);
 
     save_credentials(ssid, pass);
-    save_universe((uint16_t)univ);
+    provisioning_save_universe((uint16_t)univ);
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
     return ESP_OK;
@@ -489,8 +557,8 @@ void provisioning_start(void)
 
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    esp_netif_set_hostname(sta_netif, "dmx-artnet");
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+    esp_netif_set_hostname(s_sta_netif, "dmx-artnet");
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
