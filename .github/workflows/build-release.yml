@@ -24,12 +24,24 @@ jobs:
             echo "version=v$(cat version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build firmware with ESP-IDF
-        uses: espressif/esp-idf-ci-action@v1
+      - name: Cache ESP-IDF tools
+        uses: actions/cache@v4
         with:
-          esp_idf_version: v6.1
-          target: esp32s3
-          command: idf.py build
+          path: ~/.espressif
+          key: idf-v6.1-esp32s3-${{ runner.os }}
+
+      - name: Install ESP-IDF v6.1
+        run: |
+          git clone --branch v6.1 --depth 1 \
+            https://github.com/espressif/esp-idf.git ~/esp-idf
+          cd ~/esp-idf
+          git submodule update --init --depth 1 --jobs 4
+          ./install.sh esp32s3
+
+      - name: Build firmware
+        run: |
+          . ~/esp-idf/export.sh
+          idf.py build
 
       - name: Create GitHub Release with firmware binary
         uses: softprops/action-gh-release@v2
