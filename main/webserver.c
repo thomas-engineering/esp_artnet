@@ -19,8 +19,19 @@
 
 static const char *TAG = "webserver";
 
+typedef enum {
+    OTA_PHASE_IDLE      = 0,
+    OTA_PHASE_ACTIVE    = 1,
+    OTA_PHASE_REBOOTING = 2,
+    OTA_PHASE_ERROR     = 3,
+} ota_phase_t;
+
+static volatile ota_phase_t s_ota_phase  = OTA_PHASE_IDLE;
+static volatile int         s_ota_pct    = 0;
+static char                 s_ota_errmsg[64] = {0};
+
 #define GITHUB_FW_URL \
-    "https://github.com/thomas-engineering/esp_artnet/releases/latest/download/firmware.bin"
+    "https://github.com/thomas-engineering/esp_artnet/releases/latest/download/esp_artnet.bin"
 
 /* ── Status page HTML ─────────────────────────────────────────────────── */
 
@@ -58,6 +69,8 @@ static const char STATUS_HTML[] =
         "border-bottom:1px solid #f0f0f0;cursor:pointer;margin-bottom:0}"
     ".rl input[type=radio]{width:22px;height:22px;min-height:0;min-width:0;margin:0;flex-shrink:0}"
     ".rl span{font-size:1em}"
+    "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}"
+    ".ind{width:100%!important;animation:pulse 1.4s ease-in-out infinite}"
     "</style></head><body>"
     "<h2>ArtNet DMX Node</h2>"
     "<table>"
@@ -101,6 +114,12 @@ static const char STATUS_HTML[] =
     "<button onclick='sn()'>Save Network</button>"
     "<hr>"
     "<h3>Firmware Update</h3>"
+    "<div id='otaprog' style='display:none;margin-bottom:16px'>"
+      "<div id='otatxt' style='font-size:.9em;margin-bottom:6px'>Flashing...</div>"
+      "<div style='background:#eee;border-radius:4px;height:20px;overflow:hidden'>"
+        "<div id='otabar' style='height:100%;width:0;background:#0070d2;transition:width .3s'></div>"
+      "</div>"
+    "</div>"
     "<p><b>Flash from URL</b></p>"
     "<input type='text' id='url' value='" GITHUB_FW_URL "'>"
     "<button onclick='fu()'>Flash from URL</button>"
@@ -187,27 +206,58 @@ static const char STATUS_HTML[] =
       "})"
       ".catch(function(){sm('Request failed.',0);});"
     "}"
+    "var otaTimer=null;"
+    "function startOtaPoll(){"
+      "var bar=document.getElementById('otabar');"
+      "document.getElementById('otaprog').style.display='';"
+      "bar.className='ind';bar.style.width='0';"
+      "document.getElementById('otatxt').textContent='Starting...';"
+      "if(otaTimer)clearInterval(otaTimer);"
+      "otaTimer=setInterval(pollOta,500);"
+    "}"
+    "function stopOtaPoll(){"
+      "if(otaTimer){clearInterval(otaTimer);otaTimer=null;}"
+      "document.getElementById('otaprog').style.display='none';"
+    "}"
+    "function pollOta(){"
+      "fetch('/api/ota/progress').then(function(r){return r.json();}).then(function(d){"
+        "var bar=document.getElementById('otabar');"
+        "var lbl=document.getElementById('otatxt');"
+        "if(d.phase==='active'){"
+          "lbl.textContent='Flashing... '+d.pct+'%';"
+          "if(d.pct>0){bar.className='';bar.style.width=d.pct+'%';}"
+        "} else if(d.phase==='rebooting'){"
+          "bar.className='';bar.style.width='100%';"
+          "lbl.textContent='Done — rebooting...';"
+          "if(otaTimer){clearInterval(otaTimer);otaTimer=null;}"
+          "setTimeout(function(){location.reload();},10000);"
+        "} else if(d.phase==='error'){"
+          "stopOtaPoll();"
+          "sm('Error: '+(d.msg||'OTA failed'),0);"
+        "}"
+      "}).catch(function(){});"
+    "}"
     "function fu(){"
       "var u=document.getElementById('url').value.trim();"
       "if(!u){sm('Enter a URL.',0);return;}"
-      "sm('Sending…','');"
+      "startOtaPoll();"
       "fetch('/ota/url',{method:'POST',"
         "headers:{'Content-Type':'application/json'},"
         "body:JSON.stringify({url:u})})"
       ".then(function(r){return r.json();})"
-      ".then(function(d){sm(d.msg||(d.ok?'OK':'Error'),d.ok);})"
-      ".catch(function(){sm('Request failed.',0);});"
+      ".then(function(d){if(!d.ok){stopOtaPoll();sm(d.msg||'Error',0);}})"
+      ".catch(function(){stopOtaPoll();sm('Request failed.',0);});"
     "}"
     "function up(){"
       "var f=document.getElementById('bin').files[0];"
       "if(!f){sm('Select a .bin file.',0);return;}"
-      "sm('Uploading '+f.name+' ('+Math.round(f.size/1024)+' kB)…','');"
+      "startOtaPoll();"
       "fetch('/ota/upload',{method:'POST',"
         "headers:{'Content-Type':'application/octet-stream'},"
         "body:f})"
       ".then(function(r){return r.json();})"
-      ".then(function(d){sm(d.ok?'Flash OK — restarting…':'Error: '+d.msg,d.ok);})"
-      ".catch(function(){sm('Upload failed.',0);});"
+      ".then(function(d){if(!d.ok){stopOtaPoll();sm('Error: '+d.msg,0);}})"
+      ".catch(function(){stopOtaPoll();sm('Upload failed.',0);});"
     "}"
     "</script></body></html>";
 
@@ -375,15 +425,51 @@ static esp_err_t handle_config(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── GET /api/ota/progress ────────────────────────────────────────────── */
+
+static esp_err_t handle_ota_progress(httpd_req_t *req)
+{
+    char json[128];
+    switch (s_ota_phase) {
+    case OTA_PHASE_ACTIVE:
+        snprintf(json, sizeof(json), "{\"phase\":\"active\",\"pct\":%d}", s_ota_pct);
+        break;
+    case OTA_PHASE_REBOOTING:
+        snprintf(json, sizeof(json), "{\"phase\":\"rebooting\"}");
+        break;
+    case OTA_PHASE_ERROR:
+        snprintf(json, sizeof(json), "{\"phase\":\"error\",\"msg\":\"%s\"}", s_ota_errmsg);
+        s_ota_phase = OTA_PHASE_IDLE; /* reset so user can retry */
+        break;
+    default:
+        snprintf(json, sizeof(json), "{\"phase\":\"idle\"}");
+        break;
+    }
+    send_json(req, json);
+    return ESP_OK;
+}
+
 /* ── POST /ota/url ────────────────────────────────────────────────────── */
+
+static void url_ota_progress_cb(int pct)
+{
+    s_ota_pct = pct;
+}
 
 static void ota_url_task(void *arg)
 {
     char *url = (char *)arg;
-    esp_err_t err = ota_flash_url(url);
+    s_ota_phase = OTA_PHASE_ACTIVE;
+    s_ota_pct   = 0;
+    esp_err_t err = ota_flash_url(url, url_ota_progress_cb);
     free(url);
     if (err == ESP_OK) {
+        s_ota_phase = OTA_PHASE_REBOOTING;
+        vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();
+    } else {
+        snprintf(s_ota_errmsg, sizeof(s_ota_errmsg), "%s", esp_err_to_name(err));
+        s_ota_phase = OTA_PHASE_ERROR;
     }
     vTaskDelete(NULL);
 }
@@ -449,6 +535,9 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     size_t remaining = req->content_len;
     bool   write_ok  = true;
 
+    s_ota_phase = OTA_PHASE_ACTIVE;
+    s_ota_pct   = 0;
+
     while (remaining > 0 && write_ok) {
         size_t to_recv = remaining < sizeof(buf) ? remaining : sizeof(buf);
         int received = httpd_req_recv(req, buf, to_recv);
@@ -464,11 +553,14 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
             break;
         }
         remaining -= received;
+        s_ota_pct = (int)((req->content_len - remaining) * 100 / req->content_len);
     }
 
     err = esp_ota_end(ota_handle);
     if (!write_ok || err != ESP_OK) {
         ESP_LOGE(TAG, "OTA upload failed");
+        strlcpy(s_ota_errmsg, "Flash write failed", sizeof(s_ota_errmsg));
+        s_ota_phase = OTA_PHASE_ERROR;
         send_json(req, "{\"ok\":false,\"msg\":\"Flash write failed\"}");
         return ESP_OK;
     }
@@ -476,11 +568,14 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     err = esp_ota_set_boot_partition(part);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        strlcpy(s_ota_errmsg, "Could not set boot partition", sizeof(s_ota_errmsg));
+        s_ota_phase = OTA_PHASE_ERROR;
         send_json(req, "{\"ok\":false,\"msg\":\"Could not set boot partition\"}");
         return ESP_OK;
     }
 
     ESP_LOGI(TAG, "OTA upload successful (%u bytes), restarting", (unsigned)req->content_len);
+    s_ota_phase = OTA_PHASE_REBOOTING;
     send_json(req, "{\"ok\":true}");
     xTaskCreate(restart_task, "restart", 1024, NULL, 1, NULL);
     return ESP_OK;
@@ -502,11 +597,12 @@ void webserver_start(void)
     }
 
     static const httpd_uri_t routes[] = {
-        { .uri = "/",           .method = HTTP_GET,  .handler = handle_root      },
-        { .uri = "/api/status", .method = HTTP_GET,  .handler = handle_status    },
-        { .uri = "/api/config", .method = HTTP_POST, .handler = handle_config    },
-        { .uri = "/ota/url",    .method = HTTP_POST, .handler = handle_ota_url   },
-        { .uri = "/ota/upload", .method = HTTP_POST, .handler = handle_ota_upload },
+        { .uri = "/",                 .method = HTTP_GET,  .handler = handle_root         },
+        { .uri = "/api/status",       .method = HTTP_GET,  .handler = handle_status       },
+        { .uri = "/api/config",       .method = HTTP_POST, .handler = handle_config       },
+        { .uri = "/api/ota/progress", .method = HTTP_GET,  .handler = handle_ota_progress },
+        { .uri = "/ota/url",          .method = HTTP_POST, .handler = handle_ota_url      },
+        { .uri = "/ota/upload",       .method = HTTP_POST, .handler = handle_ota_upload   },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++)
         httpd_register_uri_handler(server, &routes[i]);

@@ -17,6 +17,8 @@
                             GITHUB_OWNER "/" GITHUB_REPO "/releases/latest"
 #define OTA_CHECK_INTERVAL_S  (6 * 60 * 60)   /* 6 hours */
 #define HTTP_RESP_BUF_SIZE    4096
+/* GitHub redirects to long signed URLs; the default 512 B header buffer overflows */
+#define OTA_HTTP_BUF_SIZE     4096
 
 static const char *TAG = "ota";
 
@@ -72,8 +74,14 @@ static void check_and_update(void)
         return;
     }
 
+    /* GitHub tags are "v0.0.2", the app version is "0.0.2": ignore the prefix */
+    const char *tag_ver = tag->valuestring;
+    if (tag_ver[0] == 'v' || tag_ver[0] == 'V') {
+        tag_ver++;
+    }
+
     const esp_app_desc_t *desc = esp_app_get_description();
-    if (strcmp(tag->valuestring, desc->version) == 0) {
+    if (strcmp(tag_ver, desc->version) == 0) {
         ESP_LOGI(TAG, "Firmware up to date (%s)", desc->version);
         cJSON_Delete(root);
         return;
@@ -105,6 +113,8 @@ static void check_and_update(void)
         .url               = fw_url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .keep_alive_enable = true,
+        .buffer_size       = OTA_HTTP_BUF_SIZE,
+        .buffer_size_tx    = OTA_HTTP_BUF_SIZE,
     };
     esp_https_ota_config_t ota_cfg = { .http_config = &ota_http };
     err = esp_https_ota(&ota_cfg);
@@ -118,20 +128,56 @@ static void check_and_update(void)
     }
 }
 
-esp_err_t ota_flash_url(const char *url)
+esp_err_t ota_flash_url(const char *url, ota_progress_cb_t cb)
 {
     ESP_LOGI(TAG, "Flashing from URL: %s", url);
     esp_http_client_config_t http_cfg = {
         .url               = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .keep_alive_enable = true,
+        .buffer_size       = OTA_HTTP_BUF_SIZE,
+        .buffer_size_tx    = OTA_HTTP_BUF_SIZE,
     };
     esp_https_ota_config_t ota_cfg = { .http_config = &http_cfg };
-    esp_err_t err = esp_https_ota(&ota_cfg);
+
+    esp_https_ota_handle_t handle;
+    esp_err_t err = esp_https_ota_begin(&ota_cfg, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_https_ota_begin: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    while (1) {
+        err = esp_https_ota_perform(handle);
+        if (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+            if (cb) {
+                int read  = esp_https_ota_get_image_len_read(handle);
+                int total = esp_https_ota_get_image_size(handle);
+                cb(total > 0 ? read * 100 / total : 0);
+            }
+        } else {
+            break;
+        }
+    }
+
+    if (!esp_https_ota_is_complete_data_received(handle)) {
+        ESP_LOGE(TAG, "OTA incomplete — aborting");
+        esp_https_ota_abort(handle);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_https_ota_perform: %s", esp_err_to_name(err));
+        esp_https_ota_abort(handle);
+        return err;
+    }
+
+    err = esp_https_ota_finish(handle);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "OTA from URL successful");
+        if (cb) cb(100);
     } else {
-        ESP_LOGE(TAG, "OTA from URL failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "esp_https_ota_finish: %s", esp_err_to_name(err));
     }
     return err;
 }

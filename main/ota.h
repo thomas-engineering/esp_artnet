@@ -4,7 +4,10 @@
 /* Starts the background OTA task (checks GitHub every 6 h). */
 void ota_start(void);
 
+/* Called periodically during ota_flash_url() with the current progress (0–100). */
+typedef void (*ota_progress_cb_t)(int pct);
+
 /* Flashes firmware from an HTTPS URL immediately.
    Blocks until complete; call from a task with ≥ 8 kB stack.
-   Returns ESP_OK on success (caller should esp_restart()). */
-esp_err_t ota_flash_url(const char *url);
+   cb may be NULL. Returns ESP_OK on success (caller should esp_restart()). */
+esp_err_t ota_flash_url(const char *url, ota_progress_cb_t cb);

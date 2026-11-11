@@ -28,3 +28,11 @@ idf_component_register(
         led_strip
         esp_timer
 )
+
+# Optional debug features: idf.py -DDMX_DEBUG_TEST_PATTERN=1 -DDMX_DEBUG_READBACK=1 build
+if(DMX_DEBUG_TEST_PATTERN)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_TEST_PATTERN)
+endif()
+if(DMX_DEBUG_READBACK)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_READBACK)
+endif()

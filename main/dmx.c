@@ -4,6 +4,7 @@
 #include "driver/gpio.h"
 #include "esp_rom_gpio.h"
 #include "esp_rom_sys.h"
+#include "hal/uart_ll.h"
 #include "soc/gpio_sig_map.h"
 #include "esp_log.h"
 
@@ -53,19 +54,26 @@ void dmx_send(const uint8_t *data, uint16_t length)
     dmx_selftest_expect(data, length > DMX_CHANNELS ? DMX_CHANNELS : length);
 
     /*
-     * Generate BREAK by inverting the idle TX line (≥88 µs low), then MAB
-     * (Mark After Break, ≥8 µs high). The pin routing is not touched:
+     * Generate BREAK by inverting the idle TX line (>=88 us low), then MAB
+     * (Mark After Break, >=8 us high). The pin routing is not touched:
      * re-calling uart_set_pin() per frame fails with "GPIO not usable".
+     *
+     * The start code is written straight into the TX FIFO right after the
+     * MAB: going through uart_write_bytes() added ~90 us of ISR latency, so
+     * the MAB was ~100 us instead of ~12 us. The whole sequence runs in a
+     * critical section so that it cannot be stretched by preemption.
      */
+    const uint8_t start_code = 0x00; /* 0x00 = dimmer data */
+    static portMUX_TYPE brk_lock = portMUX_INITIALIZER_UNLOCKED;
+    portENTER_CRITICAL(&brk_lock);
     uart_set_line_inverse(DMX_UART_NUM, UART_SIGNAL_TXD_INV);
     esp_rom_delay_us(100);
     uart_set_line_inverse(DMX_UART_NUM, UART_SIGNAL_INV_DISABLE);
     esp_rom_delay_us(12);
+    uart_ll_write_txfifo(UART_LL_GET_HW(DMX_UART_NUM), &start_code, 1);
+    portEXIT_CRITICAL(&brk_lock);
 
-    /* Start code 0x00 (dimmer) + up to 512 channel bytes */
-    const uint8_t start_code = 0x00;
-    uart_write_bytes(DMX_UART_NUM, &start_code, 1);
-
+    /* Up to 512 channel bytes follow the start code */
     uint16_t len = length > DMX_CHANNELS ? DMX_CHANNELS : length;
     uart_write_bytes(DMX_UART_NUM, data, len);
 }
