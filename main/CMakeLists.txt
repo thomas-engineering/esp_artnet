@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "artnet.c"
         "dmx.c"
+        "dmx_selftest.c"
         "provisioning.c"
         "ota.c"
         "led.c"
@@ -17,6 +18,7 @@ idf_component_register(
         app_update
         esp_driver_uart
         esp_driver_gpio
+        esp_driver_usb_serial_jtag
         esp_rom
         esp_netif
         esp_event

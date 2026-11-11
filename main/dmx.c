@@ -1,4 +1,5 @@
 #include "dmx.h"
+#include "dmx_selftest.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_rom_gpio.h"
@@ -40,12 +41,16 @@ void dmx_init(void)
 
     ESP_LOGI(TAG, "DMX init: UART0 TX=GPIO%d RX=GPIO%d DE=GPIO%d @ %d baud",
              DMX_TX_GPIO, DMX_RX_GPIO, DMX_DE_GPIO, DMX_BAUD);
+
+    dmx_selftest_start(DMX_TX_GPIO); /* no-op unless -DDMX_DEBUG_READBACK */
 }
 
 void dmx_send(const uint8_t *data, uint16_t length)
 {
     /* Wait for previous frame to finish transmitting */
     uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(50));
+
+    dmx_selftest_expect(data, length > DMX_CHANNELS ? DMX_CHANNELS : length);
 
     /*
      * Generate BREAK by inverting the idle TX line (≥88 µs low), then MAB

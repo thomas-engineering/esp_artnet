@@ -68,6 +68,9 @@ static void dmx_output_task(void *arg)
     uint8_t buf[DMX_CHANNELS];
     while (1) {
         artnet_copy_dmx(buf, DMX_CHANNELS);
+#ifdef DMX_DEBUG_TEST_PATTERN
+        memset(buf, 255, 8); /* TEMP: channels 1-8 full, bypasses Art-Net */
+#endif
         dmx_send(buf, DMX_CHANNELS);
         vTaskDelay(pdMS_TO_TICKS(25));
     }
