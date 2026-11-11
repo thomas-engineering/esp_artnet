@@ -48,18 +48,14 @@ void dmx_send(const uint8_t *data, uint16_t length)
     uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(50));
 
     /*
-     * Generate BREAK: disconnect GPIO from UART matrix, drive low ≥88 µs,
-     * then MAB (Mark After Break) high ≥8 µs, then reconnect to UART.
+     * Generate BREAK by inverting the idle TX line (≥88 µs low), then MAB
+     * (Mark After Break, ≥8 µs high). The pin routing is not touched:
+     * re-calling uart_set_pin() per frame fails with "GPIO not usable".
      */
-    esp_rom_gpio_connect_out_signal(DMX_TX_GPIO, SIG_GPIO_OUT_IDX, false, false);
-    gpio_set_level(DMX_TX_GPIO, 0);
+    uart_set_line_inverse(DMX_UART_NUM, UART_SIGNAL_TXD_INV);
     esp_rom_delay_us(100);
-
-    gpio_set_level(DMX_TX_GPIO, 1);
+    uart_set_line_inverse(DMX_UART_NUM, UART_SIGNAL_INV_DISABLE);
     esp_rom_delay_us(12);
-
-    uart_set_pin(DMX_UART_NUM, DMX_TX_GPIO, UART_PIN_NO_CHANGE,
-                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
     /* Start code 0x00 (dimmer) + up to 512 channel bytes */
     const uint8_t start_code = 0x00;
