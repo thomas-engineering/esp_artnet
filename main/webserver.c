@@ -131,6 +131,7 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"universe\":%u,"
              "\"artnet_pps\":%u,"
              "\"dmx\":%s,"
+             "\"auto_ota\":%s,"
              "\"net_mode\":\"%s\","
              "\"s_ip\":\"%s\","
              "\"s_nm\":\"%s\","
@@ -138,6 +139,7 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"s_dns\":\"%s\"}",
              ver, ip_str, rssi,
              (unsigned)provisioning_get_universe(), (unsigned)pps, dmx_arr,
+             ota_get_auto_enabled() ? "true" : "false",
              netcfg.dhcp ? "dhcp" : "static",
              netcfg.ip, netcfg.netmask, netcfg.gateway, netcfg.dns);
 
@@ -173,6 +175,11 @@ static esp_err_t handle_config(httpd_req_t *req)
         provisioning_save_universe((uint16_t)u);
         artnet_set_universe((uint16_t)u);
         ESP_LOGI(TAG, "Universe set to %d", u);
+    }
+
+    cJSON *auto_item = cJSON_GetObjectItem(root, "auto_ota");
+    if (cJSON_IsBool(auto_item)) {
+        ota_set_auto_enabled(cJSON_IsTrue(auto_item));
     }
 
     cJSON *mode_item = cJSON_GetObjectItem(root, "net_mode");

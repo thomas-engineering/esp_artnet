@@ -1,8 +1,14 @@
 #pragma once
+#include <stdbool.h>
 #include "esp_err.h"
 
 /* Starts the background OTA task (checks GitHub every 6 h). */
 void ota_start(void);
+
+/* Automatic update checks can be switched off (persisted in NVS, default on).
+   Manual updates from the web UI are not affected. */
+bool ota_get_auto_enabled(void);
+void ota_set_auto_enabled(bool enabled);
 
 /* Called periodically during ota_flash_url() with the current progress (0–100). */
 typedef void (*ota_progress_cb_t)(int pct);

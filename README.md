@@ -200,6 +200,7 @@ Saving network settings restarts the device to apply them.
 
 | Method | Description |
 |---|---|
+| **Automatic updates** | Checkbox at the top of the section. Switches the 6-hourly GitHub check on or off; the choice is saved in flash and survives reboots (default: on). Manual updates always work. |
 | **Flash from URL** | Enter an HTTPS URL to a `.bin` file (pre-filled with the latest GitHub release URL) and press **Flash from URL**. |
 | **Upload binary** | Select a local `.bin` file and press **Upload & flash**. |
 
@@ -233,7 +234,9 @@ Firmware can be updated in two ways:
 **Automatic** — every 6 hours the firmware checks the GitHub release page of
 `thomas-engineering/esp_artnet` for a newer binary.  If a new release is
 found it downloads and verifies the image over HTTPS and reboots into the new
-slot.
+slot.  It can be switched off with the **Automatic updates** checkbox in the web
+interface (setting is stored in NVS, default on).  After re-enabling, the next
+check happens at the next regular 6 h interval or after a reboot.
 
 **Manual** — use the **Firmware Update** section of the web interface to
 flash a binary from a URL or upload one from disk (see [Web Interface](#web-interface)).

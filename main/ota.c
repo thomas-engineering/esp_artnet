@@ -11,6 +11,7 @@
 #include "esp_app_format.h"
 #include "esp_ota_ops.h"
 #include "cJSON.h"
+#include "nvs_flash.h"
 
 #define GITHUB_OWNER        "thomas-engineering"
 #define GITHUB_REPO         "esp_artnet"
@@ -21,7 +22,40 @@
 /* GitHub redirects to long signed URLs; the default 512 B header buffer overflows */
 #define OTA_HTTP_BUF_SIZE     4096
 
+#define OTA_NVS_NAMESPACE     "ota"
+#define OTA_NVS_KEY_AUTO      "auto"
+
 static const char *TAG = "ota";
+
+static volatile bool s_auto_enabled = true;
+
+bool ota_get_auto_enabled(void)
+{
+    return s_auto_enabled;
+}
+
+void ota_set_auto_enabled(bool enabled)
+{
+    s_auto_enabled = enabled;
+    nvs_handle_t h;
+    if (nvs_open(OTA_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, OTA_NVS_KEY_AUTO, enabled ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    ESP_LOGI(TAG, "Automatic OTA %s", enabled ? "enabled" : "disabled");
+}
+
+static void load_auto_enabled(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 1; /* default: enabled */
+    if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, OTA_NVS_KEY_AUTO, &v);
+        nvs_close(h);
+    }
+    s_auto_enabled = (v != 0);
+}
 
 /* Accumulate HTTP response body */
 static char  s_resp[HTTP_RESP_BUF_SIZE];
@@ -201,12 +235,17 @@ static void ota_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(10000)); /* 10 s startup grace period */
     while (1) {
-        check_and_update();
+        if (s_auto_enabled) {
+            check_and_update();
+        } else {
+            ESP_LOGI(TAG, "Automatic OTA disabled — skipping check");
+        }
         vTaskDelay(pdMS_TO_TICKS((uint32_t)OTA_CHECK_INTERVAL_S * 1000));
     }
 }
 
 void ota_start(void)
 {
+    load_auto_enabled();
     xTaskCreate(ota_task, "ota", 8192, NULL, 3, NULL);
 }

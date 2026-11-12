@@ -31,7 +31,7 @@ button{min-height:48px;padding:0 20px;border:none;border-radius:4px;font-size:1e
 #uvw .adj{background:#555;min-width:56px;font-size:1.6em;padding:0;margin:0;flex-shrink:0}
 #uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 .rl{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;margin-bottom:0}
-.rl input[type=radio]{width:22px;height:22px;min-height:0;min-width:0;margin:0;flex-shrink:0}
+.rl input[type=radio],.rl input[type=checkbox]{width:22px;height:22px;min-height:0;min-width:0;margin:0;flex-shrink:0}
 .rl span{font-size:1em}
 @keyframes pulse{0%,100%{opacity:1}
 50%{opacity:.35}
@@ -67,6 +67,7 @@ button{min-height:48px;padding:0 20px;border:none;border-radius:4px;font-size:1e
 <input type='text' id='sd' placeholder='e.g. 8.8.8.8'></div>
 <button onclick='sn()'>Save Network</button><hr>
 <h3>Firmware Update</h3>
+<label class='rl'><input type='checkbox' id='ao' checked onchange='sa()'><span>Automatic updates (checks GitHub every 6 h)</span></label>
 <div id='otaprog' style='display:none;margin-bottom:16px'><div id='otatxt' style='font-size:.9em;margin-bottom:6px'>Flashing...</div>
 <div style='background:#eee;border-radius:4px;height:20px;overflow:hidden'><div id='otabar' style='height:100%;width:0;background:#0070d2;transition:width .3s'></div>
 </div>
@@ -105,7 +106,7 @@ function ref(){
       var f=document.getElementById('f'+i);if(f)f.style.height=(d.dmx[i]/2.55).toFixed(0)+'%';
     }
     if(!ini){
-      ini=true;document.getElementById('uv').value=d.universe;if(d.net_mode==='static'){
+      ini=true;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('uv').value=d.universe;if(d.net_mode==='static'){
         document.getElementById('ns').checked=true;document.getElementById('sf').style.display='';document.getElementById('sa').value=d.s_ip||'';document.getElementById('sk').value=d.s_nm||'';document.getElementById('sg').value=d.s_gw||'';document.getElementById('sd').value=d.s_dns||'';
       }
     }
@@ -128,6 +129,23 @@ function ud(d){
   if(v<0)v=0;
   if(v>32767)v=32767;
   e.value=v;
+}
+function sa(){
+  var c=document.getElementById('ao');
+  fetch('/api/config',{
+    method:'POST',headers:{
+      'Content-Type':'application/json'
+    },body:JSON.stringify({
+      auto_ota:c.checked
+    })
+  }).then(function(r){
+    return r.json();
+  }).then(function(d){
+    sm(d.ok?(c.checked?'Automatic updates enabled.':'Automatic updates disabled.'):'Error: '+(d.msg||''),d.ok);
+  }).catch(function(){
+    c.checked=!c.checked;
+    sm('Request failed.',0);
+  });
 }
 function su(){
   var u=parseInt(document.getElementById('uv').value);
