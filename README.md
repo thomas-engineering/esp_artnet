@@ -266,13 +266,21 @@ python3 gui.py
 
 | Section | Controls |
 |---|---|
-| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle |
+| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** toggle |
 | **Color** | Red / Green / Blue sliders (Ch 1–3) + live color preview swatch |
 | **6-Channel Settings** | Ch 4 macro, Ch 6 program with one-click preset buttons, Ch 5 strobe/speed/sensitivity (label changes with Ch 6 value) |
 | **Status bar** | Resolved IP, packets per second, error count |
 
 The background thread sends at **44 Hz** continuously — no explicit "Send"
 button is needed; every slider change takes effect within one frame.
+
+**Light show:** the button next to BLACKOUT runs an automatic show on the RGB
+channels (Ch 1–3), cycling through five 12 s scenes: rainbow sweep, breathing,
+ember flicker, heartbeat and aurora. Ch 4–6 are set to 0 while it runs, and all
+previous slider values are restored when you stop it. Because LEDs output light
+linearly in the DMX value while the eye perceives brightness non-linearly, the
+show is computed in perceptual space and converted with a gamma of 2.2 so fades
+look even (`_GAMMA` in `gui.py`).
 
 ### Lamp DMX mapping (42427)
 
