@@ -1,4 +1,5 @@
 #include "ota.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -38,6 +39,20 @@ static esp_err_t http_evt(esp_http_client_event_t *evt)
         }
     }
     return ESP_OK;
+}
+
+/* Compares "major.minor.patch" strings; returns >0 if a is newer than b. */
+static int version_cmp(const char *a, const char *b)
+{
+    int va[3] = {0, 0, 0}, vb[3] = {0, 0, 0};
+    sscanf(a, "%d.%d.%d", &va[0], &va[1], &va[2]);
+    sscanf(b, "%d.%d.%d", &vb[0], &vb[1], &vb[2]);
+    for (int i = 0; i < 3; i++) {
+        if (va[i] != vb[i]) {
+            return va[i] > vb[i] ? 1 : -1;
+        }
+    }
+    return 0;
 }
 
 static void check_and_update(void)
@@ -81,8 +96,8 @@ static void check_and_update(void)
     }
 
     const esp_app_desc_t *desc = esp_app_get_description();
-    if (strcmp(tag_ver, desc->version) == 0) {
-        ESP_LOGI(TAG, "Firmware up to date (%s)", desc->version);
+    if (version_cmp(tag_ver, desc->version) <= 0) {
+        ESP_LOGI(TAG, "Firmware up to date (%s, latest release %s)", desc->version, tag_ver);
         cJSON_Delete(root);
         return;
     }

@@ -10,24 +10,20 @@
 #include "freertos/queue.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
-#include "driver/usb_serial_jtag.h"
 #include "esp_rom_gpio.h"
 #include "soc/gpio_sig_map.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
-#define RB_DATA_UART    UART_NUM_1   /* 250 kbaud 8N2: decodes the frame */
-#define RB_BRK_UART     UART_NUM_2   /* 120 kbaud: break event only if low >= 11 bits = 91.7 us */
+#define RB_DATA_UART    UART_NUM_2   /* 250 kbaud 8N2: decodes the frame (UART0 = console, UART1 = DMX) */
 #define RB_DATA_BAUD    250000
-#define RB_BRK_BAUD     120000
 #define DMX_MAX_SLOTS   512
 #define RB_BUF          (DMX_MAX_SLOTS + 8)
 
 static const char *TAG = "dmx_rb";
 
 typedef struct {
-    uint32_t breaks;        /* breaks seen by UART1 (low >= 44 us)          */
-    uint32_t long_breaks;   /* breaks seen by UART2 (low >= 92 us)          */
+    uint32_t breaks;        /* breaks seen (low >= 44 us)                   */
     uint32_t ok;            /* frames that match what dmx_send() sent       */
     uint32_t bad_len;
     uint32_t bad_start;
@@ -49,21 +45,10 @@ static uint16_t s_len_cur, s_len_prev;
 static int64_t  s_last_break_us;
 
 static uint32_t s_last_n;               /* details of the last frame, for the report */
-static uint8_t  s_last_head[12];
+static uint8_t  s_last_head[32];
 static char     s_last_err[96];
 
-static QueueHandle_t s_q_data, s_q_brk;
-
-/* ---- log redirect: keep log text off the DMX line (UART0) ---- */
-static int usb_vprintf(const char *fmt, va_list ap)
-{
-    char buf[256];
-    int n = vsnprintf(buf, sizeof buf, fmt, ap);
-    if (n > 0) {
-        usb_serial_jtag_write_bytes(buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1, 0);
-    }
-    return n;
-}
+static QueueHandle_t s_q_data;
 
 /* ---- frame comparison ---- */
 static void finish_frame(void)
@@ -163,38 +148,20 @@ static void data_task(void *arg)
     }
 }
 
-static void brk_task(void *arg)
-{
-    uart_event_t ev;
-    for (;;) {
-        if (!xQueueReceive(s_q_brk, &ev, portMAX_DELAY)) {
-            continue;
-        }
-        if (ev.type == UART_BREAK) {
-            s_stats.long_breaks++;
-        } else if (ev.type == UART_DATA || ev.type == UART_FIFO_OVF || ev.type == UART_BUFFER_FULL) {
-            /* data at the wrong baud rate is garbage by design: discard it */
-            uart_flush_input(RB_BRK_UART);
-            if (ev.type != UART_DATA) xQueueReset(s_q_brk);
-        }
-    }
-}
-
 static void report_task(void *arg)
 {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(2000));
         const rb_stats_t s = s_stats;
-        ESP_LOGI(TAG, "breaks>=44us=%u breaks>=92us=%u | frames ok=%u badlen=%u badstart=%u baddata=%u | "
+        ESP_LOGI(TAG, "breaks>=44us=%u | frames ok=%u badlen=%u badstart=%u baddata=%u | "
                       "ferr=%u ovf=%u phantom0=%u | period %u..%u us",
-                 (unsigned)s.breaks, (unsigned)s.long_breaks, (unsigned)s.ok, (unsigned)s.bad_len,
+                 (unsigned)s.breaks, (unsigned)s.ok, (unsigned)s.bad_len,
                  (unsigned)s.bad_start, (unsigned)s.bad_data, (unsigned)s.frame_err,
                  (unsigned)s.overflow, (unsigned)s.phantom,
                  (unsigned)s.period_min_us, (unsigned)s.period_max_us);
-        ESP_LOGI(TAG, "last frame: %u bytes, head=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X%s%s",
-                 (unsigned)s_last_n,
-                 s_last_head[0], s_last_head[1], s_last_head[2], s_last_head[3], s_last_head[4], s_last_head[5],
-                 s_last_head[6], s_last_head[7], s_last_head[8], s_last_head[9], s_last_head[10], s_last_head[11],
+        char hex[32 * 3 + 1];
+        for (int i = 0; i < 32; i++) sprintf(&hex[i * 3], "%02X ", s_last_head[i]);
+        ESP_LOGI(TAG, "last frame: %u bytes, head=%s%s%s", (unsigned)s_last_n, hex,
                  s_last_err[0] ? " ERROR: " : "", s_last_err);
     }
 }
@@ -211,8 +178,9 @@ static void setup_rx(uart_port_t port, int baud, uint32_t sig, int tap, QueueHan
     };
     ESP_ERROR_CHECK(uart_driver_install(port, 2048, 0, 64, q, 0));
     ESP_ERROR_CHECK(uart_param_config(port, &cfg));
+    uart_set_rx_full_threshold(port, 1); /* deliver every byte at once: no frame tail left in the FIFO at the next BREAK */
     /* Feed the pad level into this UART's RX through the GPIO matrix. The pad
-     * keeps its UART0 TX output function; we only enable its input path. */
+     * keeps its UART1 TX output function; we only enable its input path. */
     ESP_ERROR_CHECK(gpio_input_enable(tap));
     esp_rom_gpio_connect_in_signal(tap, sig, false);
 }
@@ -228,21 +196,12 @@ void dmx_selftest_expect(const uint8_t *data, uint16_t len)
 
 void dmx_selftest_start(int tap_gpio)
 {
-    usb_serial_jtag_driver_config_t usb_cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-    usb_cfg.tx_buffer_size = 4096;
-    esp_err_t err = usb_serial_jtag_driver_install(&usb_cfg);
-    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
-        esp_log_set_vprintf(usb_vprintf);
-    }
-
-    setup_rx(RB_DATA_UART, RB_DATA_BAUD, U1RXD_IN_IDX, tap_gpio, &s_q_data);
-    setup_rx(RB_BRK_UART,  RB_BRK_BAUD,  U2RXD_IN_IDX, tap_gpio, &s_q_brk);
+    setup_rx(RB_DATA_UART, RB_DATA_BAUD, U2RXD_IN_IDX, tap_gpio, &s_q_data);
 
     xTaskCreate(data_task,   "rb_data",   4096, NULL, 7, NULL);
-    xTaskCreate(brk_task,    "rb_brk",    3072, NULL, 5, NULL);
     xTaskCreate(report_task, "rb_report", 4096, NULL, 3, NULL);
 
-    ESP_LOGI(TAG, "read-back test active on GPIO%d (usb driver: %s)", tap_gpio, esp_err_to_name(err));
+    ESP_LOGI(TAG, "read-back test active on GPIO%d", tap_gpio);
 }
 
 #endif /* DMX_DEBUG_READBACK */

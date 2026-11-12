@@ -17,18 +17,23 @@ is not used by this firmware.
 
 ### Wiring
 
-| ESP32-S3 GPIO | MAX3485 pin | Function |
+| ESP32-S3 GPIO | MAX3430 pin | Function |
 |---|---|---|
-| GPIO 43 (UART0 TX) | DI (pin 4) | DMX data out |
-| GPIO 44 (UART0 RX) | RO (pin 1) | Reserved (not used) |
+| GPIO 41 (UART1 TX) | DI (pin 4) | DMX data out |
+| GPIO 42 (UART1 RX) | RO (pin 1) | Reserved (not used) |
 | GPIO 1 | DE + RE (pins 2+3, tied) | Direction control — HIGH = transmit |
 | GND | GND (pin 5) | Common ground |
-| 3.3 V or 5 V | VCC (pin 8) | Supply |
+| 3.3 V | VCC (pin 8) | Supply (the MAX3430 is a 3.3 V device) |
 
-The MAX3485 A/B outputs connect to the XLR-3 or XLR-5 DMX connector:
-- Pin 2 → MAX3485 A (non-inverting)
-- Pin 3 → MAX3485 B (inverting)
-- Pin 1 → ground shield
+The MAX3430 A/B outputs connect to the XLR-3 or XLR-5 DMX connector:
+- Pin 3 (Data+) → MAX3430 A (pin 6, non-inverting)
+- Pin 2 (Data−) → MAX3430 B (pin 7, inverting)
+- Pin 1 (cable shield / signal common) → MAX3430 GND (pin 5)
+
+> **Note:** Use a 3.3 V RS-485 transceiver such as the MAX3430. If you use a
+> 5 V RS-485 transceiver (e.g. MAX485), a logic level converter is required
+> between the ESP32-S3 and the transceiver, because the ESP32-S3 GPIOs are not
+> 5 V tolerant: 3.3 V → 5 V for DI and DE/RE, and 5 V → 3.3 V for RO.
 
 See `doc/pinout.jpg` for the board layout.
 
@@ -74,10 +79,50 @@ USB-JTAG bridge, USB VID:PID 303a:1001):
 idf.py -p /dev/ttyACM0 flash
 ```
 
+> **Note:** The serial port name depends on your setup. If other USB serial
+> devices are connected (for example an Arduino), the ESP may show up as
+> `/dev/ttyACM1` or another number, and the numbers can change after
+> re-plugging. List the devices with `ls -l /dev/serial/by-id/` and use the
+> one named `Espressif_USB_JTAG_serial_debug_unit_…`. Flashing the wrong port
+> fails with `No serial data received`.
+
 > **Note:** `idf.py monitor` hangs on this USB-JTAG device because the kernel
 > rejects DTR/RTS modem-control ioctls with EPROTO.  Use a custom
 > `reset_capture.py` script (see the session scratchpad) or any plain serial
 > terminal at 115200 baud to read boot output.
+
+### Debug builds
+
+Optional diagnostics are compiled in with CMake options on the `idf.py` command
+line. All of them are **off** in a normal build.
+
+| Option | Purpose |
+|---|---|
+| `-DDMX_DEBUG_TEST_PATTERN=1` | Forces DMX channels 1–8 to 255 and bypasses Art-Net |
+| `-DDMX_DEBUG_REPLAY=1` | Sends a fixed fade (channels 1–3, 0 → 30 → 0, one step every 30 ms, all other slots 0, 513 slots, ~26 ms frame period), the same as the Arduino `DMX_Master` example. Used to compare the ESP signal with a known-good master |
+| `-DDMX_DEBUG_READBACK=1` | Routes the DMX TX pin into UART2 and compares the decoded frames with what was sent; summary every 2 s on the console |
+| `-DDMX_DEBUG_SNIFF=1` | Listen-only mode: DE/RE low, nothing is transmitted. Decodes the DMX frames of another master on the bus (frame content and rate) and logs a summary every 2 s |
+
+Example:
+
+```bash
+idf.py -DDMX_DEBUG_REPLAY=1 build
+```
+
+> **Important — run `idf.py fullclean` before the next normal build.**
+> The `-DDMX_DEBUG_*` options are stored in the build directory
+> (`build/CMakeCache.txt` and `build/toolchain/cflags`) and stay active in
+> later plain `idf.py build` runs. A leftover `DMX_DEBUG_TEST_PATTERN` silently
+> forces channels 1–8 to full and ignores Art-Net, so the lamp lights up
+> regardless of the input. Always use
+>
+> ```bash
+> idf.py fullclean
+> idf.py build
+> ```
+>
+> after a debug build, and check that
+> `grep DMX_DEBUG build/toolchain/cflags` prints nothing.
 
 ### Partition table
 
@@ -355,7 +400,9 @@ esp_artnet/
 │   ├── provisioning.c   — SoftAP captive portal, WiFi connect, DNS hijack,
 │   │                       NVS-backed universe + network config (DHCP/static IP)
 │   ├── artnet.c         — UDP receiver, Art-Net parser, runtime universe change
-│   ├── dmx.c            — UART0 DMX-512 transmitter
+│   ├── dmx.c            — UART1 DMX-512 transmitter
+│   ├── dmx_selftest.c   — optional UART read-back test (DMX_DEBUG_READBACK)
+│   ├── dmx_sniff.c      — optional DMX bus sniffer (DMX_DEBUG_SNIFF)
 │   ├── ota.c            — automatic GitHub OTA updater (6 h interval)
 │   ├── webserver.c      — status/config web UI, /api/status, /api/config,
 │   │                       /ota/url, /ota/upload

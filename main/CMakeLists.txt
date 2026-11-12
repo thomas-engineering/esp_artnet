@@ -4,6 +4,7 @@ idf_component_register(
         "artnet.c"
         "dmx.c"
         "dmx_selftest.c"
+        "dmx_sniff.c"
         "provisioning.c"
         "ota.c"
         "led.c"
@@ -18,7 +19,6 @@ idf_component_register(
         app_update
         esp_driver_uart
         esp_driver_gpio
-        esp_driver_usb_serial_jtag
         esp_rom
         esp_netif
         esp_event
@@ -35,4 +35,10 @@ if(DMX_DEBUG_TEST_PATTERN)
 endif()
 if(DMX_DEBUG_READBACK)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_READBACK)
+endif()
+if(DMX_DEBUG_SNIFF)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_SNIFF)
+endif()
+if(DMX_DEBUG_REPLAY)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_REPLAY)
 endif()

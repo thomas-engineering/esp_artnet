@@ -9,6 +9,8 @@
 #include "driver/gpio.h"
 #include "artnet.h"
 #include "dmx.h"
+#include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "provisioning.h"
 #include "ota.h"
 #include "led.h"
@@ -68,11 +70,33 @@ static void dmx_output_task(void *arg)
     uint8_t buf[DMX_CHANNELS];
     while (1) {
         artnet_copy_dmx(buf, DMX_CHANNELS);
+#ifdef DMX_DEBUG_REPLAY
+        /* Replay of the Arduino DMX_Master sketch as captured on the bus:
+         * ch1-3 fade 0..31..0 in steps of 1 every 30 ms, all other slots 0,
+         * 513 slots per frame, one frame every ~26 ms. */
+        static int val, dir = 1;
+        static int64_t t_step;
+        int64_t now = esp_timer_get_time();
+        if (now - t_step >= 30000) {
+            t_step = now;
+            val += dir;
+            if (val > 30) dir = -1;
+            if (val < 1)  dir = 1;
+        }
+        memset(buf, 0, sizeof buf);
+        buf[0] = buf[1] = buf[2] = (uint8_t)val;
+#endif
 #ifdef DMX_DEBUG_TEST_PATTERN
         memset(buf, 255, 8); /* TEMP: channels 1-8 full, bypasses Art-Net */
 #endif
         dmx_send(buf, DMX_CHANNELS);
-        vTaskDelay(pdMS_TO_TICKS(25));
+        /* No extra pause: dmx_send() waits for the previous frame, giving ~43 Hz
+         * back-to-back frames like the Arduino reference master. */
+#ifdef DMX_DEBUG_REPLAY
+        esp_rom_delay_us(3300); /* UNO frame period is ~26.1 ms (6 us gap per slot) */
+#else
+        vTaskDelay(1);
+#endif
     }
 }
 
@@ -89,7 +113,7 @@ void app_main(void)
     led_init();
     check_factory_reset();
 
-    provisioning_start(); /* blocks until IP obtained — UART0 stays as console until here */
+    provisioning_start(); /* blocks until IP obtained */
 
     mdns_init();
     mdns_hostname_set("dmx-artnet");
@@ -97,7 +121,7 @@ void app_main(void)
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     ESP_LOGI("main", "mDNS hostname: dmx-artnet.local");
 
-    dmx_init();           /* reconfigures UART0 (GPIO43/44) for DMX after WiFi is up */
+    dmx_init();           /* UART1 on GPIO41/42 + DE on GPIO1 */
     artnet_start(provisioning_get_universe());
     webserver_start();
     ota_start();
