@@ -428,12 +428,20 @@ esp_artnet/
 │   │                       NVS-backed universe + network config (DHCP/static IP)
 │   ├── artnet.c         — UDP receiver, Art-Net parser, runtime universe change
 │   ├── dmx.c            — UART1 DMX-512 transmitter
-│   ├── dmx_selftest.c   — optional UART read-back test (DMX_DEBUG_READBACK)
-│   ├── dmx_sniff.c      — optional DMX bus sniffer (DMX_DEBUG_SNIFF)
 │   ├── ota.c            — automatic GitHub OTA updater (6 h interval)
 │   ├── webserver.c      — status/config web UI, /api/status, /api/config,
 │   │                       /ota/url, /ota/upload
 │   ├── led.c/.h         — WS2812 + GPIO2 status LEDs
+│   ├── web/             — HTML/CSS/JS pages, embedded into the firmware at build time
+│   │   ├── status.html      — status / config web UI (served by webserver.c)
+│   │   └── portal.html      — WiFi setup captive portal (served by provisioning.c,
+│   │                           placeholders {{UNIVERSE}} and {{VERSION}})
+│   ├── debug/           — optional debug/test code, only compiled with -DDMX_DEBUG_*
+│   │   ├── debug.cmake      — maps the -DDMX_DEBUG_* options to sources/defines
+│   │   ├── dmx_debug.c/.h   — single hook interface used by main.c / dmx.c
+│   │   │                       (empty inline stubs in production builds)
+│   │   ├── dmx_selftest.c   — UART read-back test (DMX_DEBUG_READBACK)
+│   │   └── dmx_sniff.c      — DMX bus sniffer (DMX_DEBUG_SNIFF)
 │   ├── CMakeLists.txt
 │   └── idf_component.yml  — managed components: espressif/cjson, mdns, led_strip
 ├── python_test_client/

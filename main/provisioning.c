@@ -224,139 +224,49 @@ static void dns_task(void *arg)
 
 /* ── Portal HTML ──────────────────────────────────────────────────────── */
 
-/* HTML split around the dynamically injected universe <input>.
-   All visible strings are set by the bilingual JS block in PORTAL_HTML_2. */
-static const char PORTAL_HTML_1[] =
-    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    "<title>Art-Net Node Setup</title>"
-    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<style>"
-    "body{font-family:sans-serif;max-width:420px;margin:40px auto;padding:0 16px}"
-    "h2{margin-bottom:4px}"
-    "label{display:block;font-size:.9em;margin-bottom:2px}"
-    "input,select{width:100%;box-sizing:border-box;padding:9px 8px;"
-    "margin-bottom:14px;border:1px solid #ccc;border-radius:4px;font-size:1em}"
-    "button{width:100%;padding:11px;border:none;border-radius:4px;"
-    "font-size:1em;cursor:pointer;margin-bottom:8px}"
-    ".primary{background:#0070d2;color:#fff}"
-    ".scan{background:#555;color:#fff}"
-    "#net{display:none}"
-    ".hint{font-size:.8em;color:#666;margin-top:16px}"
-    ".lb{float:right;font-size:.8em;background:none;border:1px solid #0070d2;"
-    "color:#0070d2;border-radius:3px;padding:2px 7px;cursor:pointer;margin-top:6px}"
-    ".pw-wrap{position:relative}"
-    ".pw-wrap input{padding-right:40px}"
-    ".eye{position:absolute;right:0;top:0;bottom:0;width:38px;background:none;"
-    "border:none;cursor:pointer;padding:7px;color:#888;margin:0}"
-    ".eye svg{width:18px;height:18px;display:block}"
-    "</style></head><body>"
-    "<button class='lb' onclick='tl()' id='lb'></button>"
-    "<h2 id='ht'></h2>"
-    "<button class='scan' id='sb' type='button' onclick='sc()'></button>"
-    "<select id='net' onchange='pk(this)'>"
-    "<option value='' id='op'></option>"
-    "</select>"
-    "<form action='/save' method='post'>"
-    "<label id='l1'></label>"
-    "<input id='ssid' name='ssid' type='text' autocomplete='off' required>"
-    "<label id='l2'></label>"
-    "<div class='pw-wrap'>"
-    "<input name='pass' type='password' id='pi' autocomplete='current-password'>"
-    "<button type='button' class='eye' onclick='ey()'>"
-    "<svg id='eo' viewBox='0 0 24 24' fill='none' stroke='currentColor'"
-        " stroke-width='2' stroke-linecap='round'>"
-    "<path d='M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8'/>"
-    "<circle cx='12' cy='12' r='3'/>"
-    "</svg>"
-    "<svg id='ec' viewBox='0 0 24 24' fill='none' stroke='currentColor'"
-        " stroke-width='2' stroke-linecap='round' style='display:none'>"
-    "<path d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8"
-            "a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4"
-            "c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"
-            "m-6.72-1.07a3 3 0 1 1-4.24-4.24'/>"
-    "<line x1='1' y1='1' x2='23' y2='23'/>"
-    "</svg>"
-    "</button></div>"
-    "<label id='l3'></label>";
-    /* universe <input> injected here with the stored value */
-
-static const char PORTAL_HTML_2[] =
-    "<button class='primary' type='submit' id='l4'></button>"
-    "</form>"
-    "<p class='hint' id='l5'></p>"
-    "<script>"
-    "var S={"
-      "en:{lb:'DE',ht:'Art-Net Node WiFi Setup',"
-          "sb:'Scan networks',sg:'Scanning…',sr:'Scan again',se:'Error — retry',"
-          "op:'— Select network —',"
-          "l1:'WiFi Name (SSID)',"
-          "l2:'Password (leave empty for open network)',"
-          "l3:'Art-Net Universe (0 = first universe)',"
-          "l4:'Save & connect',"
-          "l5:'After saving the node connects to the WiFi and is reachable at its IP address.'},"
-      "de:{lb:'EN',ht:'Art-Net Node WLAN-Setup',"
-          "sb:'Netzwerke suchen',sg:'Suche…',sr:'Erneut suchen',se:'Fehler — nochmals',"
-          "op:'— Netzwerk auswählen —',"
-          "l1:'WLAN-Name (SSID)',"
-          "l2:'Passwort (leer lassen wenn offen)',"
-          "l3:'Art-Net Universe (0 = erstes Universum)',"
-          "l4:'Speichern & verbinden',"
-          "l5:'Nach dem Speichern verbindet sich der Node mit dem WLAN und ist unter seiner IP-Adresse erreichbar.'}"
-    "};"
-    "var L=localStorage.getItem('lang')||(navigator.language.toLowerCase().startsWith('de')?'de':'en');"
-    "function ap(){"
-      "var t=S[L];"
-      "['lb','ht','op','l1','l2','l3','l4','l5'].forEach(function(k){"
-        "document.getElementById(k).textContent=t[k];});"
-      "var b=document.getElementById('sb');"
-      "if(!b.disabled)b.textContent=t.sb;"
-    "}"
-    "function tl(){L=L==='en'?'de':'en';localStorage.setItem('lang',L);ap();}"
-    "ap();"
-    "function sc(){"
-      "var b=document.getElementById('sb');"
-      "b.disabled=1;b.textContent=S[L].sg;"
-      "fetch('/scan').then(r=>r.json()).then(nets=>{"
-        "var s=document.getElementById('net');"
-        "s.innerHTML='<option value=\"\">'+S[L].op+'</option>';"
-        "nets.forEach(n=>{"
-          "var o=document.createElement('option');"
-          "o.value=n.ssid;"
-          "o.textContent=n.ssid+' ('+n.rssi+' dBm)';"
-          "s.appendChild(o);});"
-        "s.style.display='block';"
-        "b.disabled=0;b.textContent=S[L].sr;"
-      "}).catch(()=>{b.disabled=0;b.textContent=S[L].se;});}"
-    "function pk(s){if(s.value)document.getElementById('ssid').value=s.value;}"
-    "function ey(){"
-      "var i=document.getElementById('pi'),"
-          "eo=document.getElementById('eo'),"
-          "ec=document.getElementById('ec');"
-      "if(i.type==='password'){"
-        "i.type='text';eo.style.display='none';ec.style.display='';"
-      "}else{"
-        "i.type='password';eo.style.display='';ec.style.display='none';"
-      "}"
-    "}"
-    "</script>";
+/* Portal page: web/portal.html, embedded at build time (EMBED_TXTFILES).
+   It contains the placeholders {{UNIVERSE}} and {{VERSION}}; all visible
+   strings are set by the bilingual JS block inside the page. */
+extern const char portal_html_start[] asm("_binary_portal_html_start");
 
 /* ── HTTP handlers ────────────────────────────────────────────────────── */
 
+/* Sends tmpl in chunks, replacing {{UNIVERSE}} and {{VERSION}} */
+static void send_portal_page(httpd_req_t *req, const char *universe, const char *version)
+{
+    static const struct { const char *key; size_t len; } keys[] = {
+        { "{{UNIVERSE}}", 12 }, { "{{VERSION}}", 11 },
+    };
+    const char *vals[] = { universe, version };
+
+    const char *p = portal_html_start;
+    for (;;) {
+        const char *k = strstr(p, "{{");
+        if (!k) {
+            httpd_resp_sendstr_chunk(req, p);
+            return;
+        }
+        httpd_resp_send_chunk(req, p, k - p);
+        size_t skip = 2; /* unknown "{{": emit it literally */
+        const char *out = "{{";
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            if (strncmp(k, keys[i].key, keys[i].len) == 0) {
+                out = vals[i];
+                skip = keys[i].len;
+                break;
+            }
+        }
+        httpd_resp_sendstr_chunk(req, out);
+        p = k + skip;
+    }
+}
+
 static esp_err_t handle_root(httpd_req_t *req)
 {
-    char univ_input[80];
-    snprintf(univ_input, sizeof(univ_input),
-             "<input name='univ' type='number' min='0' max='32767' value='%u'>",
-             provisioning_get_universe());
-    char ver_footer[96];
-    snprintf(ver_footer, sizeof(ver_footer),
-             "<p class='hint' style='text-align:center'>%s</p></body></html>",
-             esp_app_get_description()->version);
+    char universe[8];
+    snprintf(universe, sizeof(universe), "%u", provisioning_get_universe());
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr_chunk(req, PORTAL_HTML_1);
-    httpd_resp_sendstr_chunk(req, univ_input);
-    httpd_resp_sendstr_chunk(req, PORTAL_HTML_2);
-    httpd_resp_sendstr_chunk(req, ver_footer);
+    send_portal_page(req, universe, esp_app_get_description()->version);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }

@@ -1,6 +1,5 @@
 #include "dmx.h"
-#include "dmx_selftest.h"
-#include "dmx_sniff.h"
+#include "debug/dmx_debug.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_rom_gpio.h"
@@ -49,22 +48,17 @@ void dmx_init(void)
     ESP_LOGI(TAG, "DMX init: UART1 TX=GPIO%d RX=GPIO%d DE=GPIO%d @ %d baud",
              DMX_TX_GPIO, DMX_RX_GPIO, DMX_DE_GPIO, DMX_BAUD);
 
-    dmx_selftest_start(DMX_TX_GPIO); /* no-op unless -DDMX_DEBUG_READBACK */
-#ifdef DMX_DEBUG_SNIFF
-    dmx_sniff_start();               /* listen only, never transmit */
-#endif
+    dmx_debug_init(DMX_TX_GPIO); /* no-op unless a -DDMX_DEBUG_* option is set */
 }
 
 void dmx_send(const uint8_t *data, uint16_t length)
 {
-#ifdef DMX_DEBUG_SNIFF
-    (void)data; (void)length;
-    return; /* sniffer mode: the bus belongs to the other master */
-#endif
+    if (dmx_debug_tx_disabled()) return;
+
     /* Wait for previous frame to finish transmitting */
     uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(50));
 
-    dmx_selftest_expect(data, length > DMX_CHANNELS ? DMX_CHANNELS : length);
+    dmx_debug_frame_sent(data, length > DMX_CHANNELS ? DMX_CHANNELS : length);
 
     /*
      * Generate BREAK by inverting the idle TX line (180 us low), then MAB

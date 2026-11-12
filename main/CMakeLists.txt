@@ -3,13 +3,14 @@ idf_component_register(
         "main.c"
         "artnet.c"
         "dmx.c"
-        "dmx_selftest.c"
-        "dmx_sniff.c"
         "provisioning.c"
         "ota.c"
         "led.c"
         "webserver.c"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "debug"
+    EMBED_TXTFILES
+        "web/status.html"
+        "web/portal.html"
     REQUIRES
         nvs_flash
         esp_wifi
@@ -29,16 +30,6 @@ idf_component_register(
         esp_timer
 )
 
-# Optional debug features: idf.py -DDMX_DEBUG_TEST_PATTERN=1 -DDMX_DEBUG_READBACK=1 build
-if(DMX_DEBUG_TEST_PATTERN)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_TEST_PATTERN)
-endif()
-if(DMX_DEBUG_READBACK)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_READBACK)
-endif()
-if(DMX_DEBUG_SNIFF)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_SNIFF)
-endif()
-if(DMX_DEBUG_REPLAY)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE DMX_DEBUG_REPLAY)
-endif()
+# Optional debug / test features live in main/debug/ and are only compiled
+# when requested, e.g.: idf.py -DDMX_DEBUG_REPLAY=1 -DDMX_DEBUG_READBACK=1 build
+include("${CMAKE_CURRENT_LIST_DIR}/debug/debug.cmake")
