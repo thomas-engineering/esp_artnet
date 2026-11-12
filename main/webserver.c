@@ -1,5 +1,6 @@
 #include "webserver.h"
 #include "artnet.h"
+#include "dmx.h"
 #include "ota.h"
 #include "provisioning.h"
 #include <string.h>
@@ -46,6 +47,9 @@ static const char STATUS_HTML[] =
     "td{padding:6px 8px;border-bottom:1px solid #eee}"
     "td:first-child{color:#666;font-size:.9em;width:45%}"
     "#dg{display:grid;grid-template-columns:repeat(16,1fr);gap:3px;margin-bottom:20px}"
+    "#cw{display:flex;gap:8px;align-items:center;margin-bottom:10px}"
+    "#cw button{min-width:48px;margin:0;padding:0 12px}"
+    "#cl{flex:1;text-align:center;font-weight:bold}"
     ".bc{text-align:center}"
     ".bo{height:36px;background:#eee;border-radius:2px;position:relative;overflow:hidden}"
     ".bi{position:absolute;bottom:0;width:100%;background:#0070d2;height:0;transition:height .25s}"
@@ -63,6 +67,8 @@ static const char STATUS_HTML[] =
     "#uvw{display:flex;gap:8px;align-items:stretch;margin-bottom:12px}"
     "#uvw input{flex:1;text-align:center;font-size:2em;font-weight:bold;"
         "letter-spacing:.05em;min-height:64px;margin:0;padding:4px}"
+    "#uv{-moz-appearance:textfield;appearance:textfield}"
+    "#uv::-webkit-inner-spin-button,#uv::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}"
     "#uvw .adj{background:#555;min-width:56px;font-size:1.6em;padding:0;margin:0;flex-shrink:0}"
     "#uvw .sav{min-width:88px;margin:0;flex-shrink:0}"
     ".rl{display:flex;align-items:center;gap:12px;padding:12px 0;"
@@ -80,7 +86,14 @@ static const char STATUS_HTML[] =
     "<tr><td>Art-Net Universe</td><td id='un'>&#8211;</td></tr>"
     "<tr><td>Art-Net</td><td id='pp'>&#8211;</td></tr>"
     "</table>"
-    "<h3>DMX Ch 1&#8211;16</h3>"
+    "<h3>DMX Channels</h3>"
+    "<div id='cw'>"
+      "<button class='s' type='button' onclick='cj(0)'>&#9198;</button>"
+      "<button class='s' type='button' onclick='cs(-16)'>&#9664;</button>"
+      "<div id='cl'></div>"
+      "<button class='s' type='button' onclick='cs(16)'>&#9654;</button>"
+      "<button class='s' type='button' onclick='cj(464)'>&#9197;</button>"
+    "</div>"
     "<div id='dg'></div>"
     "<hr>"
     "<h3>Art-Net Settings</h3>"
@@ -130,13 +143,23 @@ static const char STATUS_HTML[] =
     "<div id='msg'></div>"
     "<script>"
     "var g=document.getElementById('dg');"
-    "for(var i=0;i<16;i++){"
+    "var off=0;"
+    "for(var i=0;i<48;i++){"
       "g.innerHTML+='<div class=bc><div class=bo><div class=bi id=f'+i+'></div></div>"
-                    "<div class=bn>'+(i+1)+'</div></div>';"
+                    "<div class=bn id=n'+i+'></div></div>';"
     "}"
+    "function lb(){"
+      "for(var i=0;i<48;i++)document.getElementById('n'+i).textContent=off+i+1;"
+      "document.getElementById('cl').textContent='Ch '+(off+1)+'\\u2013'+(off+48);"
+    "}"
+    "function cs(d){"
+      "off=Math.max(0,Math.min(512-48,off+d));lb();ref();"
+    "}"
+    "function cj(o){off=o;lb();ref();}"
+    "lb();"
     "var ini=false;"
     "function ref(){"
-      "fetch('/api/status').then(function(r){return r.json();}).then(function(d){"
+      "fetch('/api/status?off='+off).then(function(r){return r.json();}).then(function(d){"
         "document.getElementById('ver').textContent=d.version;"
         "document.getElementById('ip').textContent=d.ip;"
         "document.getElementById('rs').textContent=d.rssi+' dBm';"
@@ -144,7 +167,7 @@ static const char STATUS_HTML[] =
         "var p=document.getElementById('pp');"
         "p.textContent=d.artnet_pps+' pkt/s';"
         "p.style.color=d.artnet_pps>0?'green':'';"
-        "for(var i=0;i<16&&i<d.dmx.length;i++){"
+        "for(var i=0;i<48&&i<d.dmx.length;i++){"
           "var f=document.getElementById('f'+i);"
           "if(f)f.style.height=(d.dmx[i]/2.55).toFixed(0)+'%';"
         "}"
@@ -320,15 +343,26 @@ static esp_err_t handle_status(httpd_req_t *req)
     s_last_pkt = now_pkt;
     s_last_us  = now_us;
 
-    /* DMX channels 1-16 */
-    uint8_t dmx[16] = {0};
-    artnet_copy_dmx(dmx, sizeof(dmx));
+    /* Requested window of 48 DMX channels (3 rows of 16), start offset via ?off= */
+    int off = 0;
+    char q[32], ov[8];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "off", ov, sizeof(ov)) == ESP_OK) {
+        off = atoi(ov);
+    }
+    if (off < 0) off = 0;
+    if (off > DMX_CHANNELS - 48) off = DMX_CHANNELS - 48;
+    off -= off % 16;
+
+    uint8_t all[DMX_CHANNELS] = {0};
+    artnet_copy_dmx(all, sizeof(all));
+    const uint8_t *dmx = all + off;
 
     /* Build DMX array string */
-    char dmx_arr[80];
+    char dmx_arr[200];
     int pos = 0;
     pos += snprintf(dmx_arr + pos, sizeof(dmx_arr) - pos, "[");
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < 48; i++)
         pos += snprintf(dmx_arr + pos, sizeof(dmx_arr) - pos,
                         "%s%u", i ? "," : "", dmx[i]);
     snprintf(dmx_arr + pos, sizeof(dmx_arr) - pos, "]");
@@ -337,7 +371,7 @@ static esp_err_t handle_status(httpd_req_t *req)
     net_config_t netcfg;
     provisioning_get_net_config(&netcfg);
 
-    char json[512];
+    char json[768];
     snprintf(json, sizeof(json),
              "{\"version\":\"%s\","
              "\"ip\":\"%s\","
