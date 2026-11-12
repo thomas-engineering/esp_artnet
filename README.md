@@ -1,4 +1,4 @@
-# ESP ArtNet — Art-Net to DMX Node
+# ESP Art-Net — Art-Net to DMX Node
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Built with Claude](https://img.shields.io/badge/Built%20with-Claude%20AI-blueviolet)](https://claude.ai)

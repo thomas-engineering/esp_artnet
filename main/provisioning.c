@@ -228,7 +228,7 @@ static void dns_task(void *arg)
    All visible strings are set by the bilingual JS block in PORTAL_HTML_2. */
 static const char PORTAL_HTML_1[] =
     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    "<title>ArtNet Node Setup</title>"
+    "<title>Art-Net Node Setup</title>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<style>"
     "body{font-family:sans-serif;max-width:420px;margin:40px auto;padding:0 16px}"
@@ -286,7 +286,7 @@ static const char PORTAL_HTML_2[] =
     "<p class='hint' id='l5'></p>"
     "<script>"
     "var S={"
-      "en:{lb:'DE',ht:'ArtNet Node WiFi Setup',"
+      "en:{lb:'DE',ht:'Art-Net Node WiFi Setup',"
           "sb:'Scan networks',sg:'Scanning…',sr:'Scan again',se:'Error — retry',"
           "op:'— Select network —',"
           "l1:'WiFi Name (SSID)',"
@@ -294,7 +294,7 @@ static const char PORTAL_HTML_2[] =
           "l3:'Art-Net Universe (0 = first universe)',"
           "l4:'Save & connect',"
           "l5:'After saving the node connects to the WiFi and is reachable at its IP address.'},"
-      "de:{lb:'EN',ht:'ArtNet Node WLAN-Setup',"
+      "de:{lb:'EN',ht:'Art-Net Node WLAN-Setup',"
           "sb:'Netzwerke suchen',sg:'Suche…',sr:'Erneut suchen',se:'Fehler — nochmals',"
           "op:'— Netzwerk auswählen —',"
           "l1:'WLAN-Name (SSID)',"
@@ -460,7 +460,7 @@ static esp_err_t handle_save(httpd_req_t *req)
 
     const char *resp_html =
         "<html><body><h2>Saved!</h2>"
-        "<p>The ArtNet node is now connecting to the WiFi network.</p></body></html>";
+        "<p>The Art-Net node is now connecting to the WiFi network.</p></body></html>";
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, resp_html, HTTPD_RESP_USE_STRLEN);
 

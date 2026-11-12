@@ -38,7 +38,7 @@ static char                 s_ota_errmsg[64] = {0};
 
 static const char STATUS_HTML[] =
     "<!DOCTYPE html><html><head>"
-    "<meta charset='utf-8'><title>ArtNet Node</title>"
+    "<meta charset='utf-8'><title>Art-Net Node</title>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<style>"
     "body{font-family:sans-serif;max-width:520px;margin:0 auto;padding:16px}"
@@ -78,7 +78,7 @@ static const char STATUS_HTML[] =
     "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}"
     ".ind{width:100%!important;animation:pulse 1.4s ease-in-out infinite}"
     "</style></head><body>"
-    "<h2>ArtNet DMX Node</h2>"
+    "<h2>Art-Net DMX Node</h2>"
     "<table>"
     "<tr><td>Firmware</td><td id='ver'>&#8211;</td></tr>"
     "<tr><td>IP Address</td><td id='ip'>&#8211;</td></tr>"

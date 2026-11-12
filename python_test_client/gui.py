@@ -1,7 +1,7 @@
 """
 Art-Net test client for Showtec LED Par 64 Short Pro RGB (order 42427).
 
-Sends Art-Net ArtDMX frames to the ESP32 ArtNet→DMX node.
+Sends Art-Net ArtDMX frames to the ESP32 Art-Net→DMX node.
 
 Usage:
     python gui.py
@@ -10,6 +10,8 @@ Requires Python 3.10+ with tkinter.
 On Ubuntu/Debian, install tkinter with: sudo apt install python3-tk
 """
 
+import colorsys
+import math
 import tkinter as tk
 from tkinter import ttk
 import threading
@@ -62,6 +64,82 @@ def _ch5_desc(v: int, ch6: int) -> str:
     return "low" if v < 85 else ("medium" if v < 170 else "high sensitivity")
 
 
+# ── Light show ────────────────────────────────────────────────────────────────
+#
+# LEDs are driven by PWM, so light output is *linear* in the DMX value, while
+# human brightness perception is strongly non-linear (roughly output^(1/2.2)).
+# A fade that is linear in DMX therefore looks like it jumps up quickly and
+# then barely changes. The show is therefore computed in perceptual space
+# (where steps look even) and converted to DMX values with a gamma curve.
+
+_GAMMA        = 2.2
+_SHOW_HZ      = 40
+_SCENE_LEN    = 12.0   # seconds per scene
+_SCENE_FADE   = 0.8    # seconds of fade in / out at scene boundaries
+
+
+def perceptual_to_dmx(v: float) -> int:
+    """Map a perceptual brightness 0..1 to a linear-light DMX value 0..255."""
+    v = min(1.0, max(0.0, v))
+    return round(255.0 * v ** _GAMMA)
+
+
+def _smooth(x: float) -> float:
+    """Smoothstep 0..1."""
+    x = min(1.0, max(0.0, x))
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _scene_rainbow(t: float):
+    """Continuous rainbow sweep at full perceptual brightness."""
+    return (t * 0.12) % 1.0, 1.0, 1.0
+
+
+def _scene_breathe(t: float):
+    """Slow breathing in a drifting hue (sine in perceptual space)."""
+    v = 0.08 + 0.92 * (0.5 - 0.5 * math.cos(2 * math.pi * t / 4.0))
+    return 0.55 + 0.25 * math.sin(t * 0.3), 1.0, v
+
+
+def _scene_ember(t: float):
+    """Warm flickering fire from layered sines."""
+    f = (math.sin(t * 7.1) + math.sin(t * 11.3 + 1.7)
+         + math.sin(t * 17.9 + 4.2)) / 3.0          # -1..1
+    return 0.02 + 0.04 * (f + 1.0) / 2.0, 1.0, 0.55 + 0.35 * f
+
+
+def _scene_heartbeat(t: float):
+    """Double-pulse heartbeat, alternating magenta and cyan each beat."""
+    beat = 1.2
+    n, ph = divmod(t, beat)
+    ph /= beat
+    v = max(math.exp(-((ph - 0.10) / 0.05) ** 2),
+            0.7 * math.exp(-((ph - 0.30) / 0.06) ** 2))
+    return (0.85 if int(n) % 2 == 0 else 0.5), 1.0, 0.04 + 0.96 * v
+
+
+def _scene_aurora(t: float):
+    """Green-to-violet wandering hue with a gentle brightness swell."""
+    hue = 0.40 + 0.25 * (0.5 + 0.5 * math.sin(t * 0.45))
+    v = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * 0.9 + 1.0))
+    return hue, 0.85, v
+
+
+_SCENES = (_scene_rainbow, _scene_breathe, _scene_ember,
+           _scene_heartbeat, _scene_aurora)
+
+
+def light_show_rgb(t: float) -> tuple[int, int, int]:
+    """DMX (R, G, B) for time t seconds since the show started."""
+    idx, local = divmod(t, _SCENE_LEN)
+    scene = _SCENES[int(idx) % len(_SCENES)]
+    h, s, v = scene(local)
+    env = min(_smooth(local / _SCENE_FADE),
+              _smooth((_SCENE_LEN - local) / _SCENE_FADE))
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, s, v * env)
+    return perceptual_to_dmx(r), perceptual_to_dmx(g), perceptual_to_dmx(b)
+
+
 # ── Application ───────────────────────────────────────────────────────────────
 
 class App(tk.Tk):
@@ -87,6 +165,9 @@ class App(tk.Tk):
         self._running    = True
         self._pkt_ok     = 0
         self._pkt_fail   = 0
+        self._show_on    = False
+        self._show_t0    = 0.0
+        self._show_saved: list[int] = []
 
         self._build_ui()
         self._add_traces()
@@ -144,7 +225,12 @@ class App(tk.Tk):
         self._btn_blackout = ttk.Button(
             p, text="BLACKOUT", command=self._toggle_blackout, width=12)
         self._btn_blackout.grid(row=0, column=4, rowspan=2,
-                                padx=(14, 8), pady=4)
+                                padx=(14, 4), pady=4)
+
+        self._btn_show = ttk.Button(
+            p, text="\u2728 Light show", command=self._toggle_show, width=14)
+        self._btn_show.grid(row=0, column=5, rowspan=2,
+                            padx=(4, 8), pady=4)
 
     def _scale_row(self, parent, row: int, label: str,
                    var: tk.IntVar) -> None:
@@ -243,6 +329,37 @@ class App(tk.Tk):
         self._blackout = not self._blackout
         self._btn_blackout.configure(
             text="● BLACKOUT ●" if self._blackout else "BLACKOUT")
+
+    # ── Light show ────────────────────────────────────────────────────────────
+
+    def _toggle_show(self) -> None:
+        if self._show_on:
+            self._stop_show()
+        else:
+            # Remember the current values and switch off the lamp's own
+            # macro / strobe / program channels so only RGB is in effect.
+            self._show_saved = [v.get() for v in self._ch]
+            for i in (3, 4, 5):
+                self._ch[i].set(0)
+            self._show_on = True
+            self._show_t0 = time.monotonic()
+            self._btn_show.configure(text="\u25a0 Stop show")
+            self._show_step()
+
+    def _stop_show(self) -> None:
+        self._show_on = False
+        self._btn_show.configure(text="\u2728 Light show")
+        for v, val in zip(self._ch, self._show_saved):
+            v.set(val)
+
+    def _show_step(self) -> None:
+        if not self._show_on:
+            return
+        r, g, b = light_show_rgb(time.monotonic() - self._show_t0)
+        self._ch[0].set(r)
+        self._ch[1].set(g)
+        self._ch[2].set(b)
+        self.after(int(1000 / _SHOW_HZ), self._show_step)
 
     # ── DMX frame ────────────────────────────────────────────────────────────
 

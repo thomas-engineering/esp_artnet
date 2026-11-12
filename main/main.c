@@ -117,7 +117,7 @@ void app_main(void)
 
     mdns_init();
     mdns_hostname_set("dmx-artnet");
-    mdns_instance_name_set("ArtNet DMX Node");
+    mdns_instance_name_set("Art-Net DMX Node");
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     ESP_LOGI("main", "mDNS hostname: dmx-artnet.local");
 
