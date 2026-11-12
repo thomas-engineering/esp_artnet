@@ -449,3 +449,7 @@ esp_artnet/
 ## Development
 
 This project was coded with [Claude](https://claude.ai) (Anthropic AI) acting as the primary programmer.
+
+## Trademarks
+
+Art-Net™ is a trademark of Artistic Licence Engineering Ltd. This project is an independent implementation of the Art-Net protocol and is not affiliated with or endorsed by Artistic Licence Engineering Ltd.
