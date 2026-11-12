@@ -266,7 +266,7 @@ python3 gui.py
 
 | Section | Controls |
 |---|---|
-| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** toggle |
+| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** and **Police car** toggles |
 | **Color** | Red / Green / Blue sliders (Ch 1–3) + live color preview swatch |
 | **6-Channel Settings** | Ch 4 macro, Ch 6 program with one-click preset buttons, Ch 5 strobe/speed/sensitivity (label changes with Ch 6 value) |
 | **Status bar** | Resolved IP, packets per second, error count |
@@ -281,6 +281,12 @@ previous slider values are restored when you stop it. Because LEDs output light
 linearly in the DMX value while the eye perceives brightness non-linearly, the
 show is computed in perceptual space and converted with a gamma of 2.2 so fades
 look even (`_GAMMA` in `gui.py`).
+
+**Police car:** the button below it simulates a US-style light bar on Ch 1 (red)
+and Ch 3 (blue): a red triple flash, a blue triple flash, then fast red/blue
+alternation, repeating every 1.8 s. The flashes are hard on/off (80 ms), so no
+gamma correction is involved. Only one effect runs at a time; starting one stops
+the other, and stopping restores the previous slider values.
 
 ### Lamp DMX mapping (42427)
 

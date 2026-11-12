@@ -140,6 +140,34 @@ def light_show_rgb(t: float) -> tuple[int, int, int]:
     return perceptual_to_dmx(r), perceptual_to_dmx(g), perceptual_to_dmx(b)
 
 
+# ── Police car ────────────────────────────────────────────────────────────────
+#
+# US-style emergency light bar: red and blue take turns with short, hard
+# on/off flashes (no fading - a strobe is on or off), then both colors
+# alternate quickly. The LEDs are simply full on or off here, so the gamma
+# curve above does not matter.
+
+_POLICE_HZ     = 100    # update rate; the Art-Net sender runs at 44 Hz
+_POLICE_FLASH  = 0.08   # one flash: 80 ms on, 80 ms off
+_POLICE_PERIOD = 1.8    # s: red triple, blue triple, fast alternation
+
+
+def police_rgb(t: float) -> tuple[int, int, int]:
+    """DMX (R, G, B) of the police light bar at time t seconds."""
+    ph = t % _POLICE_PERIOD
+    f = _POLICE_FLASH
+    if ph < 0.5:                       # red triple flash
+        on = int(ph / f) % 2 == 0 and ph < 6 * f
+        return (255, 0, 0) if on else (0, 0, 0)
+    if 0.6 <= ph < 1.1:                # blue triple flash
+        q = ph - 0.6
+        on = int(q / f) % 2 == 0 and q < 6 * f
+        return (0, 0, 255) if on else (0, 0, 0)
+    if ph >= 1.2:                      # fast red / blue alternation
+        return (255, 0, 0) if int((ph - 1.2) / 0.1) % 2 == 0 else (0, 0, 255)
+    return (0, 0, 0)
+
+
 # ── Application ───────────────────────────────────────────────────────────────
 
 class App(tk.Tk):
@@ -165,9 +193,10 @@ class App(tk.Tk):
         self._running    = True
         self._pkt_ok     = 0
         self._pkt_fail   = 0
-        self._show_on    = False
-        self._show_t0    = 0.0
-        self._show_saved: list[int] = []
+        # Running automatic effect (light show / police car), or None
+        self._fx: tuple | None = None     # (rgb_fn, button, idle_text, hz)
+        self._fx_t0      = 0.0
+        self._fx_saved: list[int] = []
 
         self._build_ui()
         self._add_traces()
@@ -228,9 +257,16 @@ class App(tk.Tk):
                                 padx=(14, 4), pady=4)
 
         self._btn_show = ttk.Button(
-            p, text="\u2728 Light show", command=self._toggle_show, width=14)
-        self._btn_show.grid(row=0, column=5, rowspan=2,
-                            padx=(4, 8), pady=4)
+            p, text="\u2728 Light show", width=14,
+            command=lambda: self._toggle_effect(
+                light_show_rgb, self._btn_show, "\u2728 Light show", _SHOW_HZ))
+        self._btn_show.grid(row=0, column=5, padx=(4, 8), pady=(4, 1))
+
+        self._btn_police = ttk.Button(
+            p, text="Police car", width=14,
+            command=lambda: self._toggle_effect(
+                police_rgb, self._btn_police, "Police car", _POLICE_HZ))
+        self._btn_police.grid(row=1, column=5, padx=(4, 8), pady=(1, 4))
 
     def _scale_row(self, parent, row: int, label: str,
                    var: tk.IntVar) -> None:
@@ -330,36 +366,43 @@ class App(tk.Tk):
         self._btn_blackout.configure(
             text="● BLACKOUT ●" if self._blackout else "BLACKOUT")
 
-    # ── Light show ────────────────────────────────────────────────────────────
+    # ── Automatic effects (light show / police car) ───────────────────────────
 
-    def _toggle_show(self) -> None:
-        if self._show_on:
-            self._stop_show()
-        else:
-            # Remember the current values and switch off the lamp's own
-            # macro / strobe / program channels so only RGB is in effect.
-            self._show_saved = [v.get() for v in self._ch]
-            for i in (3, 4, 5):
-                self._ch[i].set(0)
-            self._show_on = True
-            self._show_t0 = time.monotonic()
-            self._btn_show.configure(text="\u25a0 Stop show")
-            self._show_step()
+    def _toggle_effect(self, fn, button, idle_text: str, hz: int) -> None:
+        """Start effect fn on the RGB channels; stop it if it is running."""
+        running = self._fx
+        if running:
+            self._stop_effect()
+            if running[1] is button:
+                return              # same button again: just stop
+        # Remember the current values and switch off the lamp's own
+        # macro / strobe / program channels so only RGB is in effect.
+        self._fx_saved = [v.get() for v in self._ch]
+        for i in (3, 4, 5):
+            self._ch[i].set(0)
+        self._fx = (fn, button, idle_text, hz)
+        self._fx_t0 = time.monotonic()
+        button.configure(text="\u25a0 Stop")
+        self._effect_step()
 
-    def _stop_show(self) -> None:
-        self._show_on = False
-        self._btn_show.configure(text="\u2728 Light show")
-        for v, val in zip(self._ch, self._show_saved):
+    def _stop_effect(self) -> None:
+        if not self._fx:
+            return
+        _, button, idle_text, _ = self._fx
+        self._fx = None
+        button.configure(text=idle_text)
+        for v, val in zip(self._ch, self._fx_saved):
             v.set(val)
 
-    def _show_step(self) -> None:
-        if not self._show_on:
+    def _effect_step(self) -> None:
+        if not self._fx:
             return
-        r, g, b = light_show_rgb(time.monotonic() - self._show_t0)
+        fn, _, _, hz = self._fx
+        r, g, b = fn(time.monotonic() - self._fx_t0)
         self._ch[0].set(r)
         self._ch[1].set(g)
         self._ch[2].set(b)
-        self.after(int(1000 / _SHOW_HZ), self._show_step)
+        self.after(int(1000 / hz), self._effect_step)
 
     # ── DMX frame ────────────────────────────────────────────────────────────
 
