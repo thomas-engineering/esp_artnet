@@ -16,6 +16,7 @@ static led_strip_handle_t s_strip;
 static volatile led_state_t  s_state        = LED_PROVISIONING;
 static volatile TickType_t   s_last_artnet  = 0;
 static volatile bool         s_artnet_seen  = false;
+static volatile led_mode_t   s_mode         = LED_MODE_NORMAL;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -35,6 +36,19 @@ static void led_task(void *arg)
         tick++;
 
         led_state_t state = s_state;
+
+        if (s_mode == LED_MODE_MUTE) {
+            gpio_set_level(LED_GPIO, 0);
+            set_rgb(0, 0, 0);
+            continue;
+        }
+        if (s_mode == LED_MODE_LOCATE) {
+            /* White, 5 Hz blink */
+            bool on = (tick % 2) == 0;
+            gpio_set_level(LED_GPIO, on);
+            if (on) set_rgb(40, 40, 40); else set_rgb(0, 0, 0);
+            continue;
+        }
 
         switch (state) {
 
@@ -111,6 +125,16 @@ void led_init(void)
 void led_set_state(led_state_t state)
 {
     s_state = state;
+}
+
+void led_set_mode(led_mode_t mode)
+{
+    s_mode = mode;
+}
+
+led_mode_t led_get_mode(void)
+{
+    return s_mode;
 }
 
 void led_artnet_pulse(void)
