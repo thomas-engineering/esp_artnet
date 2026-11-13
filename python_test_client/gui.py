@@ -363,9 +363,11 @@ class NodeDialog(tk.Toplevel):
                        command=lambda c=cmd, t=text: self._command(c, t)).grid(
                 row=i // 5, column=i % 5, padx=3, pady=3)
 
-        # IP configuration
-        f = ttk.LabelFrame(self, text="IP configuration  (ArtIpProg)")
-        f.grid(row=4, column=0, sticky="ew", **P)
+        # IP configuration (left) and discovery (right) share one row
+        side = ttk.Frame(self)
+        side.grid(row=4, column=0, sticky="ew", **P)
+        f = ttk.LabelFrame(side, text="IP configuration  (ArtIpProg)")
+        f.grid(row=0, column=0, sticky="nsew")
         for col, (text, val) in enumerate((("DHCP", "dhcp"),
                                            ("Static IP", "static"))):
             ttk.Radiobutton(f, text=text, variable=self._v_ipmode, value=val,
@@ -389,23 +391,23 @@ class NodeDialog(tk.Toplevel):
         self._ip_mode_changed()
 
         # Discovery
-        f = ttk.LabelFrame(self, text="Discovery  (ArtPoll / ArtPollReply)")
-        f.grid(row=5, column=0, sticky="ew", **P)
-        ttk.Button(f, text="Poll node", width=14,
-                   command=self._poll).pack(side="left", padx=4, pady=4)
-        ttk.Button(f, text="Request unsolicited replies", width=26,
-                   command=self._request_unsolicited).pack(
-            side="left", padx=4, pady=4)
+        f = ttk.LabelFrame(side, text="Discovery  (ArtPoll)")
+        f.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        ttk.Button(f, text="Poll node", width=19,
+                   command=self._poll).pack(padx=6, pady=(8, 4))
+        ttk.Button(f, text="Unsolicited replies", width=19,
+                   command=self._request_unsolicited).pack(padx=6, pady=4)
+        side.columnconfigure(1, weight=1)
 
         # Log
         f = ttk.LabelFrame(self, text="Log")
-        f.grid(row=6, column=0, sticky="ew", **P)
-        self._log = tk.Text(f, width=78, height=10, state="disabled",
+        f.grid(row=5, column=0, sticky="ew", **P)
+        self._log = tk.Text(f, width=78, height=6, state="disabled",
                             wrap="word")
         self._log.pack(padx=4, pady=4)
 
         ttk.Button(self, text="Close", command=self._close).grid(
-            row=7, column=0, sticky="e", padx=8, pady=(0, 8))
+            row=6, column=0, sticky="e", padx=8, pady=(0, 8))
 
         self._show_info(node)
         if not self._link.bound:
