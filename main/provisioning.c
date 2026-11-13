@@ -225,19 +225,20 @@ static void dns_task(void *arg)
 /* ── Portal HTML ──────────────────────────────────────────────────────── */
 
 /* Portal page: web/portal.html, embedded at build time (EMBED_TXTFILES).
-   It contains the placeholders {{UNIVERSE}} and {{VERSION}}; all visible
+   It contains the placeholders {{NET}}, {{SUB}}, {{UNI}} and {{VERSION}}; all visible
    strings are set by the bilingual JS block inside the page. */
 extern const char portal_html_start[] asm("_binary_portal_html_start");
 
 /* ── HTTP handlers ────────────────────────────────────────────────────── */
 
-/* Sends tmpl in chunks, replacing {{UNIVERSE}} and {{VERSION}} */
-static void send_portal_page(httpd_req_t *req, const char *universe, const char *version)
+/* Sends the portal page in chunks, replacing the {{...}} placeholders */
+static void send_portal_page(httpd_req_t *req, const char *net, const char *sub,
+                             const char *uni, const char *version)
 {
     static const struct { const char *key; size_t len; } keys[] = {
-        { "{{UNIVERSE}}", 12 }, { "{{VERSION}}", 11 },
+        { "{{NET}}", 7 }, { "{{SUB}}", 7 }, { "{{UNI}}", 7 }, { "{{VERSION}}", 11 },
     };
-    const char *vals[] = { universe, version };
+    const char *vals[] = { net, sub, uni, version };
 
     const char *p = portal_html_start;
     for (;;) {
@@ -263,10 +264,13 @@ static void send_portal_page(httpd_req_t *req, const char *universe, const char 
 
 static esp_err_t handle_root(httpd_req_t *req)
 {
-    char universe[8];
-    snprintf(universe, sizeof(universe), "%u", provisioning_get_universe());
+    uint16_t pa = provisioning_get_universe();
+    char net[8], sub[8], uni[8];
+    snprintf(net, sizeof(net), "%u", (pa >> 8) & 0x7F);
+    snprintf(sub, sizeof(sub), "%u", (pa >> 4) & 0x0F);
+    snprintf(uni, sizeof(uni), "%u", pa & 0x0F);
     httpd_resp_set_type(req, "text/html");
-    send_portal_page(req, universe, esp_app_get_description()->version);
+    send_portal_page(req, net, sub, uni, esp_app_get_description()->version);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
@@ -351,22 +355,32 @@ static esp_err_t handle_save(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char ssid[64] = {0}, pass[64] = {0}, univ_str[8] = {0};
+    char ssid[64] = {0}, pass[64] = {0};
+    char net_str[8] = {0}, sub_str[8] = {0}, uni_str[8] = {0};
     httpd_query_key_value(body, "ssid", ssid, sizeof(ssid));
     httpd_query_key_value(body, "pass", pass, sizeof(pass));
-    httpd_query_key_value(body, "univ", univ_str, sizeof(univ_str));
+    httpd_query_key_value(body, "anet", net_str, sizeof(net_str));
+    httpd_query_key_value(body, "asub", sub_str, sizeof(sub_str));
+    httpd_query_key_value(body, "auni", uni_str, sizeof(uni_str));
     url_decode(ssid);
     url_decode(pass);
-    url_decode(univ_str);
 
     if (ssid[0] == '\0') {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID missing");
         return ESP_FAIL;
     }
 
-    long univ = univ_str[0] ? strtol(univ_str, NULL, 10) : 0;
-    if (univ < 0)     univ = 0;
-    if (univ > 32767) univ = 32767;
+    /* Port-address = net (0-127), sub-net (0-15), universe (0-15) */
+    long net = net_str[0] ? strtol(net_str, NULL, 10) : 0;
+    long sub = sub_str[0] ? strtol(sub_str, NULL, 10) : 0;
+    long uni = uni_str[0] ? strtol(uni_str, NULL, 10) : 0;
+    if (net < 0) net = 0;
+    if (net > 127) net = 127;
+    if (sub < 0) sub = 0;
+    if (sub > 15) sub = 15;
+    if (uni < 0) uni = 0;
+    if (uni > 15) uni = 15;
+    long univ = (net << 8) | (sub << 4) | uni;
 
     const char *resp_html =
         "<html><body><h2>Saved!</h2>"

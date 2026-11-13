@@ -1,5 +1,6 @@
 #include "webserver.h"
 #include "artnet.h"
+#include "artnet_poll.h"
 #include "dmx.h"
 #include "ota.h"
 #include "provisioning.h"
@@ -37,6 +38,17 @@ static char                 s_ota_errmsg[64] = {0};
 extern const char status_html_start[] asm("_binary_status_html_start");
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
+
+/* Escape " and \ so text is safe inside a JSON string (names are plain ASCII) */
+static void json_escape(const char *src, char *dst, size_t dstsz)
+{
+    size_t di = 0;
+    for (; *src && di + 3 < dstsz; src++) {
+        if (*src == '"' || *src == '\\') dst[di++] = '\\';
+        dst[di++] = *src;
+    }
+    dst[di] = '\0';
+}
 
 static void send_json(httpd_req_t *req, const char *json)
 {
@@ -123,7 +135,13 @@ static esp_err_t handle_status(httpd_req_t *req)
     net_config_t netcfg;
     provisioning_get_net_config(&netcfg);
 
-    char json[768];
+    char nshort[ARTNET_SHORT_NAME_LEN], nlong[ARTNET_LONG_NAME_LEN];
+    char eshort[2 * ARTNET_SHORT_NAME_LEN], elong[2 * ARTNET_LONG_NAME_LEN];
+    artnet_names_get(nshort, sizeof(nshort), nlong, sizeof(nlong));
+    json_escape(nshort, eshort, sizeof(eshort));
+    json_escape(nlong,  elong,  sizeof(elong));
+
+    char json[1024];
     snprintf(json, sizeof(json),
              "{\"version\":\"%s\","
              "\"ip\":\"%s\","
@@ -132,6 +150,8 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"artnet_pps\":%u,"
              "\"dmx\":%s,"
              "\"auto_ota\":%s,"
+             "\"name_short\":\"%s\","
+             "\"name_long\":\"%s\","
              "\"net_mode\":\"%s\","
              "\"s_ip\":\"%s\","
              "\"s_nm\":\"%s\","
@@ -140,6 +160,7 @@ static esp_err_t handle_status(httpd_req_t *req)
              ver, ip_str, rssi,
              (unsigned)provisioning_get_universe(), (unsigned)pps, dmx_arr,
              ota_get_auto_enabled() ? "true" : "false",
+             eshort, elong,
              netcfg.dhcp ? "dhcp" : "static",
              netcfg.ip, netcfg.netmask, netcfg.gateway, netcfg.dns);
 
@@ -175,6 +196,17 @@ static esp_err_t handle_config(httpd_req_t *req)
         provisioning_save_universe((uint16_t)u);
         artnet_set_universe((uint16_t)u);
         ESP_LOGI(TAG, "Universe set to %d", u);
+    }
+
+    /* Art-Net node names (empty string = reset to default) */
+    cJSON *ns_item = cJSON_GetObjectItem(root, "name_short");
+    cJSON *nl_item = cJSON_GetObjectItem(root, "name_long");
+    if (cJSON_IsString(ns_item) || cJSON_IsString(nl_item)) {
+        if (artnet_names_update(cJSON_IsString(ns_item) ? ns_item->valuestring : NULL,
+                                cJSON_IsString(nl_item) ? nl_item->valuestring : NULL)) {
+            artnet_announce();
+            ESP_LOGI(TAG, "Art-Net names updated");
+        }
     }
 
     cJSON *auto_item = cJSON_GetObjectItem(root, "auto_ota");

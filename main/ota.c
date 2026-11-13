@@ -27,7 +27,7 @@
 
 static const char *TAG = "ota";
 
-static volatile bool s_auto_enabled = true;
+static volatile bool s_auto_enabled = false;   /* opt-in via the web UI */
 
 bool ota_get_auto_enabled(void)
 {
@@ -49,7 +49,7 @@ void ota_set_auto_enabled(bool enabled)
 static void load_auto_enabled(void)
 {
     nvs_handle_t h;
-    uint8_t v = 1; /* default: enabled */
+    uint8_t v = 0; /* default: disabled until switched on in the web UI */
     if (nvs_open(OTA_NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, OTA_NVS_KEY_AUTO, &v);
         nvs_close(h);

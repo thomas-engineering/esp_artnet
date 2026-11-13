@@ -23,21 +23,23 @@ button{width:100%;padding:11px;border:none;border-radius:4px;font-size:1em;curso
 <button class='scan' id='sb' type='button' onclick='sc()'></button><select id='net' onchange='pk(this)'><option value='' id='op'></option></select><form action='/save' method='post'><label id='l1'></label>
 <input id='ssid' name='ssid' type='text' autocomplete='off' required><label id='l2'></label>
 <div class='pw-wrap'><input name='pass' type='password' id='pi' autocomplete='current-password'><button type='button' class='eye' onclick='ey()'><svg id='eo' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><path d='M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8'/><circle cx='12' cy='12' r='3'/></svg><svg id='ec' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' style='display:none'><path d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24'/><line x1='1' y1='1' x2='23' y2='23'/></svg></button></div>
-<label id='l3'></label>
-<input name='univ' type='number' min='0' max='32767' value='{{UNIVERSE}}'><button class='primary' type='submit' id='l4'></button></form>
+<label id='l3a'></label>
+<input name='anet' type='number' min='0' max='127' value='{{NET}}'><label id='l3b'></label>
+<input name='asub' type='number' min='0' max='15' value='{{SUB}}'><label id='l3c'></label>
+<input name='auni' type='number' min='0' max='15' value='{{UNI}}'><button class='primary' type='submit' id='l4'></button></form>
 <p class='hint' id='l5'></p>
 <script>
 var S={
   en:{
-    lb:'DE',ht:'Art-Net Node WiFi Setup',sb:'Scan networks',sg:'Scanning…',sr:'Scan again',se:'Error — retry',op:'— Select network —',l1:'WiFi Name (SSID)',l2:'Password (leave empty for open network)',l3:'Art-Net Universe (0 = first universe)',l4:'Save & connect',l5:'After saving the node connects to the WiFi and is reachable at its IP address.'
+    lb:'DE',ht:'Art-Net Node WiFi Setup',sb:'Scan networks',sg:'Scanning…',sr:'Scan again',se:'Error — retry',op:'— Select network —',l1:'WiFi Name (SSID)',l2:'Password (leave empty for open network)',l3a:'Art-Net Net (0–127)',l3b:'Art-Net Sub-net (0–15)',l3c:'Art-Net Universe (0–15)',l4:'Save & connect',l5:'After saving the node connects to the WiFi and is reachable at its IP address.'
   },de:{
-    lb:'EN',ht:'Art-Net Node WLAN-Setup',sb:'Netzwerke suchen',sg:'Suche…',sr:'Erneut suchen',se:'Fehler — nochmals',op:'— Netzwerk auswählen —',l1:'WLAN-Name (SSID)',l2:'Passwort (leer lassen wenn offen)',l3:'Art-Net Universe (0 = erstes Universum)',l4:'Speichern & verbinden',l5:'Nach dem Speichern verbindet sich der Node mit dem WLAN und ist unter seiner IP-Adresse erreichbar.'
+    lb:'EN',ht:'Art-Net Node WLAN-Setup',sb:'Netzwerke suchen',sg:'Suche…',sr:'Erneut suchen',se:'Fehler — nochmals',op:'— Netzwerk auswählen —',l1:'WLAN-Name (SSID)',l2:'Passwort (leer lassen wenn offen)',l3a:'Art-Net Net (0–127)',l3b:'Art-Net Subnet (0–15)',l3c:'Art-Net Universe (0–15)',l4:'Speichern & verbinden',l5:'Nach dem Speichern verbindet sich der Node mit dem WLAN und ist unter seiner IP-Adresse erreichbar.'
   }
 };
 var L=localStorage.getItem('lang')||(navigator.language.toLowerCase().startsWith('de')?'de':'en');
 function ap(){
   var t=S[L];
-  ['lb','ht','op','l1','l2','l3','l4','l5'].forEach(function(k){
+  ['lb','ht','op','l1','l2','l3a','l3b','l3c','l4','l5'].forEach(function(k){
     document.getElementById(k).textContent=t[k];
   });
   var b=document.getElementById('sb');

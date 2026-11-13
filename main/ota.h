@@ -2,10 +2,11 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-/* Starts the background OTA task (checks GitHub every 6 h). */
+/* Starts the background OTA task. It checks GitHub at boot and every 6 h,
+   but only while automatic updates are enabled (off by default). */
 void ota_start(void);
 
-/* Automatic update checks can be switched off (persisted in NVS, default on).
+/* Automatic update checks can be switched off (persisted in NVS, default OFF).
    Manual updates from the web UI are not affected. */
 bool ota_get_auto_enabled(void);
 void ota_set_auto_enabled(bool enabled);
