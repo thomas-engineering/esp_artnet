@@ -59,8 +59,13 @@ See `doc/pinout.jpg` for the board layout.
 ### Reset / factory reset button
 
 GPIO 0 is the onboard **BOOT** button.
-Hold it for **3 seconds** (at any time, not only at power-on) to clear stored
-WiFi credentials and re-enter provisioning mode.
+Hold it for **3 seconds while the node is running** to reset **all** settings
+(WiFi credentials, network configuration, Art-Net address, node names, failsafe
+mode, automatic-update switch) and re-enter provisioning mode. This also works
+while the setup portal is open.
+
+Holding the button *during* power-on does not work: on the ESP32-S3, GPIO 0 low
+at reset selects the serial download mode instead of starting the firmware.
 
 ---
 
@@ -168,8 +173,18 @@ portal**:
    **http://dmx-artnet.local** (mDNS) or at the IP shown in your router's
    DHCP table (hostname: `dmx-artnet`).
 
-**To re-provision:** hold the BOOT button for 3 s at power-on.  The stored
-credentials are erased and the device returns to SoftAP mode.
+**To re-provision:** hold the BOOT button for 3 s while the node is running.
+All settings are erased and the device returns to SoftAP mode.
+
+**If the network is not reachable at boot** (for example router and node are
+powered up together after a power cut) the node opens the setup portal after
+about 15 s, but keeps the stored credentials: every 30 s it tries the stored
+network again, as long as nobody is connected to the portal, and restarts into
+normal operation as soon as the connection works.
+
+**If the connection is lost later** the node reconnects on its own, forever,
+with a pause between attempts that grows from 1 s to 30 s. The status LED blinks
+yellow meanwhile and the DMX output keeps running.
 
 ---
 
@@ -183,8 +198,8 @@ Once connected, the node serves a status and configuration page at
 ### Status
 
 The top of the page auto-refreshes every 2 seconds and shows firmware
-version, IP address, WiFi RSSI, active Art-Net universe (the 15-bit
-port-address) split into its **Net** and **Sub-net** parts, incoming packet
+version, IP address, WiFi RSSI, the Art-Net **Net**, **Sub-net** and
+**Universe** (with the resulting 15-bit port-address), incoming packet
 rate, and a live bar graph for DMX channels 1–48 (three rows of 16, paged with
 the arrow buttons).
 
@@ -202,6 +217,10 @@ port-address as defined by the standard: **Net** (0–127), **Sub-net** (0–15)
 and **Universe** (0–15). Values outside these ranges are clamped, and each
 **Save** button stores the complete address (`net × 256 + sub-net × 16 +
 universe`, 0–32767).  It applies immediately — no reboot required.  The WiFi setup portal has the same three fields.
+
+Below them, **When Art-Net data stops** selects the failsafe behaviour (hold the
+last values, all channels off, all channels full); it is saved as soon as you
+change it.
 
 ### Network Configuration
 
@@ -229,6 +248,25 @@ packets on **UDP port 6454**.  The universe is configured on the provisioning
 page (default 0 — the first Art-Net universe).  Received channel data is
 forwarded as DMX-512 at ~40 Hz on the RS-485 output.
 
+The DMX output starts right at power-on, before WiFi is connected and also in
+the setup portal, so the bus is always driven (all channels 0 until Art-Net data
+arrives). WiFi power saving is switched off to keep the latency of incoming
+packets low.
+
+**ArtDmx handling**
+
+- Packets with a protocol version below 14 or for another port-address are
+  ignored; the length field is never trusted beyond the received packet size.
+- **Sequence numbers** are checked: a packet that arrives out of order is
+  dropped (sequence 0 disables the check, a pause of 1 s restarts it).
+- **Two sources** may send to the universe at the same time. Their data is
+  merged **HTP** (highest value per channel wins) by default, or **LTP** (latest
+  change wins) when selected with ArtAddress. A source drops out of the merge
+  10 s after its last packet; a third source is ignored.
+- **Failsafe:** when no ArtDmx arrives for 6 s the output either holds the last
+  values (default), goes to all 0, or to all 255. Select it in the web interface
+  or with ArtAddress; the setting is stored in NVS.
+
 ### Status LEDs
 
 The board has two onboard LEDs that indicate the current state:
@@ -248,12 +286,20 @@ Firmware can be updated in two ways:
 web interface (the setting is stored in NVS and survives reboots), the firmware
 checks the GitHub release page of `thomas-engineering/esp_artnet` for a newer
 binary 10 s after every boot and then every 6 hours.  If a new release is found
-it downloads and verifies the image over HTTPS and reboots into the new slot.
+it downloads the asset named `esp_artnet.bin`, verifies the image over HTTPS and
+reboots into the new slot. Because that interrupts the DMX output, an update is
+only installed when no ArtDmx has arrived for 60 s; otherwise the node looks
+again every 5 minutes.
 Ticking the box does not start a check immediately: the next one happens at the
 next boot or the next 6 h interval.  Unticking it stops all checks.
 
 **Manual** — use the **Firmware Update** section of the web interface to
 flash a binary from a URL or upload one from disk (see [Web Interface](#web-interface)).
+
+Only one update can run at a time; a second request is rejected. After an update
+the new firmware confirms itself once WiFi is connected and all services are
+running. If it never gets that far, the bootloader returns to the previous
+firmware at the next reset (rollback).
 
 ---
 
@@ -292,8 +338,10 @@ The node answers **ArtPoll** (opcode `0x2000`) with an **ArtPollReply**
 (`0x2100`, 239 bytes), so Art-Net controllers and the test client can find it.
 The reply contains the node's IP and MAC, its names, firmware version
 (minor.patch), the DHCP state and its single DMX output port with the
-configured universe. It is sent as a unicast to the address and port the poll
-came from.
+configured universe, the merge state and the failsafe mode. It is sent as a
+unicast to the poller's address on **port 6454**, and additionally to the port
+the poll came from if that is a different one. A *targeted* ArtPoll (TalkToMe
+bit 5) is only answered when the node's port-address is inside the given range.
 
 **ArtAddress** (`0x6000`) lets a controller reprogram the node remotely; the
 node answers with an ArtPollReply. Supported fields:
@@ -304,15 +352,19 @@ node answers with an ArtPollReply. Supported fields:
 | PortName (17 chars), LongName (63 chars) | Node names shown in ArtPollReply; saved in NVS. Empty = unchanged. |
 | Command `0x02` / `0x03` / `0x04` | LEDs normal / muted / locate (fast white blink). The state is reported in the ArtPollReply status byte. |
 | Command `0x90` | Clear the DMX output buffer. |
+| Command `0x08` / `0x09` / `0x0A` | Failsafe mode: hold / all zero / all full (stored in NVS). |
+| Command `0x10` / `0x50` | Merge mode LTP / HTP for the output port. |
+| Command `0x01` | Cancel merge: the next source that sends takes over alone. |
 
-Other commands (merge modes etc.) are ignored. ArtAddress only addresses the
-single output port (BindIndex 0 or 1).
+Other commands are ignored. ArtAddress only addresses the single output port
+(BindIndex 0 or 1).
 
 **Unsolicited ArtPollReply:** the node broadcasts a reply (to the subnet's
 directed broadcast address, port 6454) once after boot. If a controller has
 polled with the TalkToMe flag *reply on change* (bit 1), it also broadcasts a
-reply whenever the universe, the names or the LED mode change, whether the
-change came from ArtAddress or from the web UI.
+reply whenever the universe, the names, the LED mode, the merge or failsafe mode
+or the IP address change, whether the change came from ArtAddress or from the
+web UI. The flag of the most recent ArtPoll counts.
 
 **ArtIpProg** (`0xF800`) configures the node's IP settings remotely; the node
 answers with an **ArtIpProgReply** (`0xF900`) carrying its IP address, subnet
@@ -523,6 +575,7 @@ esp_artnet/
 │   ├── artnet_ip.c      — ArtIpProg / ArtIpProgReply (remote IP configuration)
 │   ├── dmx.c            — UART1 DMX-512 transmitter
 │   ├── ota.c            — optional automatic GitHub OTA updater (off by default, 6 h interval)
+│   ├── http_util.c      — reads complete HTTP request bodies
 │   ├── webserver.c      — status/config web UI, /api/status, /api/config,
 │   │                       /ota/url, /ota/upload
 │   ├── led.c/.h         — WS2812 + GPIO2 status LEDs
@@ -542,6 +595,7 @@ esp_artnet/
 ├── python_test_client/
 │   ├── artnet.py        — Art-Net UDP sender, ArtPoll / ArtAddress / ArtIpProg client (stdlib only)
 │   ├── gui.py           — tkinter GUI for Showtec LED Par 64 (42427)
+│   ├── test_artnet.py   — unit tests for the packet builders / parsers
 │   └── requirements.txt
 ├── doc/
 │   ├── screenshot_webui.png
@@ -549,6 +603,8 @@ esp_artnet/
 │   ├── pinout.jpg
 │   └── 42427_Anleitung 42427 Englisch.pdf
 ├── .github/workflows/
+│   ├── ci.yml             — on every push / pull request: Python unit tests and
+│   │                         firmware builds (normal and with all debug options)
 │   └── build-release.yml  — builds firmware with ESP-IDF v6.1 and publishes
 │                             a GitHub release with the binary
 ├── partitions.csv
@@ -556,6 +612,18 @@ esp_artnet/
 ```
 
 ---
+
+## Tests
+
+```bash
+cd python_test_client
+python3 -m unittest -v
+```
+
+runs the unit tests of the Art-Net test client (packet builders and parsers; no
+network or hardware needed). The same tests and two firmware builds run on
+GitHub for every push and pull request (`.github/workflows/ci.yml`). There are
+no automated tests for the firmware itself yet.
 
 ## Development
 
