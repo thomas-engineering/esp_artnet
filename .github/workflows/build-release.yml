@@ -19,9 +19,13 @@ jobs:
 
       - name: Read version
         id: ver
+        # The input goes through an environment variable: interpolating it
+        # into the script would let its text be executed as shell code.
+        env:
+          TAG_OVERRIDE: ${{ github.event.inputs.tag_override }}
         run: |
-          if [ -n "${{ github.event.inputs.tag_override }}" ]; then
-            echo "version=${{ github.event.inputs.tag_override }}" >> "$GITHUB_OUTPUT"
+          if [ -n "$TAG_OVERRIDE" ]; then
+            echo "version=$TAG_OVERRIDE" >> "$GITHUB_OUTPUT"
           else
             echo "version=v$(cat version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
           fi

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests for the Art-Net test client
+        working-directory: python_test_client
+        run: python -m unittest -v
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache ESP-IDF tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.espressif
+          key: idf-v6.1-esp32s3-${{ runner.os }}
+
+      - name: Install ESP-IDF v6.1
+        run: |
+          git clone --branch v6.1 --depth 1 \
+            https://github.com/espressif/esp-idf.git ~/esp-idf
+          cd ~/esp-idf
+          git submodule update --init --depth 1 --jobs 4
+          ./install.sh esp32s3
+
+      - name: Build firmware
+        run: |
+          . ~/esp-idf/export.sh
+          idf.py build
+
+      - name: Build with all debug options
+        run: |
+          . ~/esp-idf/export.sh
+          idf.py -B build_debug -DDMX_DEBUG_TEST_PATTERN=1 -DDMX_DEBUG_REPLAY=1 \
+            -DDMX_DEBUG_READBACK=1 -DDMX_DEBUG_SNIFF=1 build
