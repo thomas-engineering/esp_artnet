@@ -243,7 +243,7 @@ static esp_err_t handle_config(httpd_req_t *req)
 
     if (restart) {
         send_json(req, "{\"ok\":true,\"restart\":true}");
-        xTaskCreate(restart_task, "restart", 1024, NULL, 1, NULL);
+        xTaskCreate(restart_task, "restart", 3072, NULL, 1, NULL);
     } else {
         send_json(req, "{\"ok\":true,\"restart\":false}");
     }
@@ -402,7 +402,7 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     ESP_LOGI(TAG, "OTA upload successful (%u bytes), restarting", (unsigned)req->content_len);
     s_ota_phase = OTA_PHASE_REBOOTING;
     send_json(req, "{\"ok\":true}");
-    xTaskCreate(restart_task, "restart", 1024, NULL, 1, NULL);
+    xTaskCreate(restart_task, "restart", 3072, NULL, 1, NULL);
     return ESP_OK;
 }
 

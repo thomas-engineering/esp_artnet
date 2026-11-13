@@ -196,7 +196,7 @@ static void artnet_task(void *arg)
             bool restart;
             size_t n = artnet_ip_prog((const uint8_t *)&pkt, len, ip_reply, &restart);
             sendto(sock, ip_reply, n, 0, (struct sockaddr *)&src, src_len);
-            if (restart) xTaskCreate(restart_task, "restart", 1024, NULL, 1, NULL);
+            if (restart) xTaskCreate(restart_task, "restart", 3072, NULL, 1, NULL);
             continue;
         }
 
