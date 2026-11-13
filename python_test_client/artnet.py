@@ -25,7 +25,12 @@ POLL_TALK_ON_CHANGE = 0x02
 
 # ArtAddress commands (subset)
 AC_NONE, AC_LED_NORMAL, AC_LED_MUTE, AC_LED_LOCATE = 0x00, 0x02, 0x03, 0x04
+AC_CANCEL_MERGE = 0x01
+AC_FAIL_HOLD, AC_FAIL_ZERO, AC_FAIL_FULL = 0x08, 0x09, 0x0A
+AC_MERGE_LTP0, AC_MERGE_HTP0 = 0x10, 0x50
 AC_CLEAR_OP0 = 0x90
+
+_FAILSAFE = {0: "hold", 1: "zero", 2: "full", 3: "scene"}
 
 _INDICATORS = {0: "unknown", 1: "locate", 2: "mute", 3: "normal"}
 
@@ -43,25 +48,26 @@ class ArtNetSender:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self._seq          = 0
         self._cached_ip: str | None = None
-        self._last_resolve = 0.0
+        self._closed       = threading.Event()
+        # Name resolution (mDNS can take seconds) runs in its own thread so
+        # that it never stalls the 44 Hz frame stream.
+        threading.Thread(target=self._resolve_loop, daemon=True).start()
 
     @property
     def resolved_ip(self) -> str | None:
         return self._cached_ip
 
-    def _get_ip(self) -> str | None:
-        now = time.monotonic()
-        if self._cached_ip is None or now - self._last_resolve > 5.0:
+    def _resolve_loop(self) -> None:
+        while not self._closed.is_set():
             try:
-                self._cached_ip  = socket.gethostbyname(self.host)
-                self._last_resolve = now
+                self._cached_ip = socket.gethostbyname(self.host)
             except OSError:
-                self._cached_ip = None
-        return self._cached_ip
+                pass                    # keep the last address that worked
+            self._closed.wait(5.0)
 
     def send(self, universe: int, dmx_data: bytes | bytearray) -> bool:
         """Send a DMX frame. universe is a 15-bit Art-Net port address. Returns True on success."""
-        ip = self._get_ip()
+        ip = self._cached_ip
         if ip is None:
             return False
 
@@ -72,7 +78,7 @@ class ArtNetSender:
         if len(data) % 2:
             data += b'\x00'
 
-        self._seq = (self._seq + 1) & 0xFF
+        self._seq = self._seq % 255 + 1     # 1..255: 0 would disable the sequence check
         sub_uni = universe & 0xFF
         net     = (universe >> 8) & 0x7F
 
@@ -92,6 +98,7 @@ class ArtNetSender:
             return False
 
     def close(self) -> None:
+        self._closed.set()
         try:
             self._sock.close()
         except OSError:
@@ -207,6 +214,10 @@ def parse_poll_reply(data: bytes, addr: tuple) -> dict | None:
         "uni":       (data[190] & 0x0F) if universe is not None else None,
         "indicator": _INDICATORS[data[23] >> 6],
         "dhcp":      bool(data[212] & 0x02),
+        "active":    bool(data[182] & 0x80),          # ArtDmx is being received
+        "merging":   bool(data[182] & 0x08),          # two sources are merged
+        "merge":     "LTP" if data[182] & 0x02 else "HTP",
+        "failsafe":  _FAILSAFE[data[217] >> 6] if len(data) > 217 else "hold",
         "ip":        ip,
         "name":      text(26, 44),
         "long_name": text(44, 108),
@@ -217,21 +228,49 @@ def parse_poll_reply(data: bytes, addr: tuple) -> dict | None:
     }
 
 
-def _broadcast_targets() -> list[str]:
-    """Limited broadcast plus the directed broadcast of the default interface
-    (assuming a /24 subnet, which covers typical home / stage networks)."""
-    targets = ['255.255.255.255']
+def _interface_broadcasts() -> list[str]:
+    """Broadcast addresses of all IPv4 interfaces (Linux; empty elsewhere)."""
     try:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.connect(('192.0.2.1', 9))      # no packet is sent for UDP connect
-        local = probe.getsockname()[0]
-        probe.close()
-        directed = '.'.join(local.split('.')[:3] + ['255'])
-        if directed not in targets:
-            targets.append(directed)
+        import fcntl
+    except ImportError:
+        return []
+    SIOCGIFBRDADDR = 0x8919
+    result = []
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _, name in socket.if_nameindex():
+            try:
+                ifreq = struct.pack('256s', name.encode()[:15])
+                addr = socket.inet_ntoa(
+                    fcntl.ioctl(probe.fileno(), SIOCGIFBRDADDR, ifreq)[20:24])
+            except OSError:
+                continue                # interface without an IPv4 address
+            if addr != '0.0.0.0' and not addr.startswith('127.') and addr not in result:
+                result.append(addr)
     except OSError:
         pass
-    return targets
+    finally:
+        probe.close()
+    return result
+
+
+def _broadcast_targets() -> list[str]:
+    """Limited broadcast plus the directed broadcast of every interface.
+
+    Where the interfaces cannot be listed, the default interface is used and a
+    /24 network is assumed."""
+    targets = ['255.255.255.255']
+    found = _interface_broadcasts()
+    if not found:
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.connect(('192.0.2.1', 9))      # no packet is sent for UDP connect
+            local = probe.getsockname()[0]
+            probe.close()
+            found = ['.'.join(local.split('.')[:3] + ['255'])]
+        except OSError:
+            pass
+    return targets + [t for t in found if t not in targets]
 
 
 def _udp_socket(port: int, optional: bool = False):

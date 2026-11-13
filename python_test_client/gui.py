@@ -345,16 +345,23 @@ class NodeDialog(tk.Toplevel):
         ttk.Button(f, text="Apply names", command=self._apply_names).grid(
             row=0, column=2, rowspan=2, padx=8)
 
-        # Commands
+        # Commands: a grid of 5 columns keeps the dialog narrow
         f = ttk.LabelFrame(self, text="Commands  (ArtAddress)")
         f.grid(row=3, column=0, sticky="ew", **P)
-        for text, cmd in (("Locate (blink)", artnet.AC_LED_LOCATE),
-                          ("Mute LEDs", artnet.AC_LED_MUTE),
-                          ("LEDs normal", artnet.AC_LED_NORMAL),
-                          ("Clear output", artnet.AC_CLEAR_OP0)):
-            ttk.Button(f, text=text, width=14,
-                       command=lambda c=cmd, t=text: self._command(c, t)).pack(
-                side="left", padx=4, pady=4)
+        commands = (("Locate (blink)", artnet.AC_LED_LOCATE),
+                    ("Mute LEDs", artnet.AC_LED_MUTE),
+                    ("LEDs normal", artnet.AC_LED_NORMAL),
+                    ("Clear output", artnet.AC_CLEAR_OP0),
+                    ("Cancel merge", artnet.AC_CANCEL_MERGE),
+                    ("Failsafe: hold", artnet.AC_FAIL_HOLD),
+                    ("Failsafe: zero", artnet.AC_FAIL_ZERO),
+                    ("Failsafe: full", artnet.AC_FAIL_FULL),
+                    ("Merge HTP", artnet.AC_MERGE_HTP0),
+                    ("Merge LTP", artnet.AC_MERGE_LTP0))
+        for i, (text, cmd) in enumerate(commands):
+            ttk.Button(f, text=text, width=13,
+                       command=lambda c=cmd, t=text: self._command(c, t)).grid(
+                row=i // 5, column=i % 5, padx=3, pady=3)
 
         # IP configuration
         f = ttk.LabelFrame(self, text="IP configuration  (ArtIpProg)")
@@ -421,7 +428,9 @@ class NodeDialog(tk.Toplevel):
             f"{n['net']}:{n['sub']}:{n['uni']}  ({n['universe']})")
         self._v_info.set(
             f" {n['ip']}   {n['name']!r}   port-address {uni}   "
-            f"LEDs: {n['indicator']}   {'DHCP' if n['dhcp'] else 'static IP'}")
+            f"LEDs: {n['indicator']}   {'DHCP' if n['dhcp'] else 'static IP'}   "
+            f"failsafe: {n['failsafe']}   merge: {n['merge']}"
+            f"{' (merging)' if n['merging'] else ''}")
 
     def _drain(self) -> None:
         """Show replies received by the link thread."""
@@ -434,7 +443,9 @@ class NodeDialog(tk.Toplevel):
                 self._say(f"\u2190 ArtPollReply from {addr[0]}:{addr[1]}  "
                           f"name={node['name']!r}  long={node['long_name']!r}  "
                           f"port-address={node['universe']}  "
-                          f"LEDs={node['indicator']}  {node['report']}")
+                          f"LEDs={node['indicator']}  failsafe={node['failsafe']}  "
+                          f"merge={node['merge']}{'*' if node['merging'] else ''}  "
+                          f"{node['report']}")
         except queue.Empty:
             pass
         try:
@@ -555,6 +566,12 @@ class App(tk.Tk):
 
         # DMX channel values: index i = Ch(i+1)
         self._ch = [tk.IntVar(value=0) for _ in range(6)]
+
+        # Values used by the background threads. Tk variables must only be
+        # touched from the main thread, so they are mirrored here on change.
+        self._tx_host     = self._v_host.get()
+        self._tx_universe = 0
+        self._tx_frame    = bytes(512)
 
         # Sender state
         self._sender: ArtNetSender | None = None
@@ -733,9 +750,15 @@ class App(tk.Tk):
                 _ch5_desc(self._ch[4].get(), self._ch[5].get())))
         self._ch[5].trace_add("write", lambda *_: self._on_ch6_change())
 
+        # Keep the sender threads' copy of the state up to date
+        for v in (self._v_host, self._v_universe, self._v_start_ch,
+                  self._v_mode, *self._ch):
+            v.trace_add("write", lambda *_: self._refresh_tx())
+
         # Populate all labels with initial values
         for v in self._ch:
             v.set(v.get())
+        self._refresh_tx()
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
@@ -816,6 +839,7 @@ class App(tk.Tk):
         self._blackout = not self._blackout
         self._btn_blackout.configure(
             text="● BLACKOUT ●" if self._blackout else "BLACKOUT")
+        self._refresh_tx()
 
     # ── Automatic effects (light show / police car) ───────────────────────────
 
@@ -857,17 +881,26 @@ class App(tk.Tk):
 
     # ── DMX frame ────────────────────────────────────────────────────────────
 
-    def _build_frame(self) -> bytearray:
+    def _build_frame(self) -> bytes:
         frame = bytearray(512)
         if self._blackout:
-            return frame
+            return bytes(frame)
         offset = max(0, self._v_start_ch.get() - 1)
         n = 3 if self._v_mode.get() == "3" else 6
         for i in range(n):
             idx = offset + i
             if idx < 512:
-                frame[idx] = self._ch[i].get()
-        return frame
+                frame[idx] = min(max(self._ch[i].get(), 0), 255)
+        return bytes(frame)
+
+    def _refresh_tx(self) -> None:
+        """Mirror the GUI state for the sender threads (main thread only)."""
+        try:
+            self._tx_host     = self._v_host.get()
+            self._tx_universe = self._v_universe.get()
+            self._tx_frame    = self._build_frame()
+        except tk.TclError:
+            pass                        # a field is empty while being edited
 
     # ── Sender thread ─────────────────────────────────────────────────────────
 
@@ -879,7 +912,7 @@ class App(tk.Tk):
     def _node_poll_loop(self) -> None:
         """Polls the target every 2 s; a reply means an Art-Net node is connected."""
         while self._running:
-            self._node_info = query_node(self._v_host.get())
+            self._node_info = query_node(self._tx_host)
             for _ in range(20):                  # 2 s, but react quickly to exit
                 if not self._running:
                     return
@@ -890,11 +923,12 @@ class App(tk.Tk):
         while self._running:
             t0 = time.monotonic()
 
-            host = self._v_host.get()
+            host = self._tx_host
             if self._sender.host != host:
+                self._sender.close()
                 self._sender = ArtNetSender(host)
 
-            ok = self._sender.send(self._v_universe.get(), self._build_frame())
+            ok = self._sender.send(self._tx_universe, self._tx_frame)
             if ok:
                 self._pkt_ok += 1
             else:
