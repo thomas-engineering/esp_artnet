@@ -22,6 +22,9 @@ bool artnet_names_update(const char *short_name, const char *long_name);
 void artnet_names_get(char *short_out, size_t short_sz,
                       char *long_out, size_t long_sz);
 
+/* Loads the stored names; call once before other tasks use this module. */
+void artnet_poll_init(void);
+
 /* Builds an ArtPollReply describing this node (one DMX output port on the
    configured universe). buf must hold ARTNET_POLL_REPLY_LEN bytes.
    Returns the packet length. */

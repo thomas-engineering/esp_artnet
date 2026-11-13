@@ -6,6 +6,7 @@
 #include <string.h>
 #include "esp_app_desc.h"
 #include "esp_netif.h"
+#include "freertos/FreeRTOS.h"
 #include "nvs.h"
 
 #define ART_OEM_UNKNOWN   0x00FFu   /* no registered OEM code */
@@ -16,9 +17,19 @@
 #define LONG_NAME_LEN        ARTNET_LONG_NAME_LEN
 #define DEFAULT_SHORT_NAME   "ESP Art-Net"
 
+/* The names are written by the HTTP task and the Art-Net task and read by
+   both; the copies are short, so a spinlock is enough. */
+static portMUX_TYPE s_names_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_short_name[SHORT_NAME_LEN];   /* empty = default */
 static char s_long_name[LONG_NAME_LEN];
 static bool s_names_loaded;
+static uint16_t s_reply_count;              /* NodeReport counter */
+
+void artnet_poll_init(void)
+{
+    char s[SHORT_NAME_LEN], l[LONG_NAME_LEN];
+    artnet_names_get(s, sizeof(s), l, sizeof(l));   /* forces the NVS load */
+}
 
 static void names_load(void)
 {
@@ -48,27 +59,29 @@ bool artnet_names_update(const char *short_name, const char *long_name)
 {
     names_load();
     bool changed = false;
-    char tmp[LONG_NAME_LEN];
+    char new_short[SHORT_NAME_LEN], new_long[LONG_NAME_LEN];
+    if (short_name) copy_ascii(new_short, sizeof(new_short), short_name);
+    if (long_name)  copy_ascii(new_long,  sizeof(new_long),  long_name);
 
-    if (short_name) {
-        copy_ascii(tmp, SHORT_NAME_LEN, short_name);
-        if (strcmp(tmp, s_short_name) != 0) {
-            strlcpy(s_short_name, tmp, sizeof(s_short_name));
-            changed = true;
-        }
+    portENTER_CRITICAL(&s_names_lock);
+    if (short_name && strcmp(new_short, s_short_name) != 0) {
+        strlcpy(s_short_name, new_short, sizeof(s_short_name));
+        changed = true;
     }
-    if (long_name) {
-        copy_ascii(tmp, LONG_NAME_LEN, long_name);
-        if (strcmp(tmp, s_long_name) != 0) {
-            strlcpy(s_long_name, tmp, sizeof(s_long_name));
-            changed = true;
-        }
+    if (long_name && strcmp(new_long, s_long_name) != 0) {
+        strlcpy(s_long_name, new_long, sizeof(s_long_name));
+        changed = true;
     }
+    /* snapshot for the NVS write, which must happen outside the lock */
+    strlcpy(new_short, s_short_name, sizeof(new_short));
+    strlcpy(new_long,  s_long_name,  sizeof(new_long));
+    portEXIT_CRITICAL(&s_names_lock);
+
     if (changed) {
         nvs_handle_t h;
         if (nvs_open(NAMES_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_str(h, "sname", s_short_name);
-            nvs_set_str(h, "lname", s_long_name);
+            nvs_set_str(h, "sname", new_short);
+            nvs_set_str(h, "lname", new_long);
             nvs_commit(h);
             nvs_close(h);
         }
@@ -86,10 +99,15 @@ void artnet_names_get(char *short_out, size_t short_sz,
                       char *long_out, size_t long_sz)
 {
     names_load();
-    snprintf(short_out, short_sz, "%s",
-             s_short_name[0] ? s_short_name : DEFAULT_SHORT_NAME);
-    if (s_long_name[0])
-        snprintf(long_out, long_sz, "%s", s_long_name);
+    char s[SHORT_NAME_LEN], l[LONG_NAME_LEN];
+    portENTER_CRITICAL(&s_names_lock);
+    strlcpy(s, s_short_name, sizeof(s));
+    strlcpy(l, s_long_name,  sizeof(l));
+    portEXIT_CRITICAL(&s_names_lock);
+
+    snprintf(short_out, short_sz, "%s", s[0] ? s : DEFAULT_SHORT_NAME);
+    if (l[0])
+        snprintf(long_out, long_sz, "%s", l);
     else
         snprintf(long_out, long_sz, "ESP32 Art-Net DMX Node v%s",
                  esp_app_get_description()->version);
@@ -141,11 +159,12 @@ size_t artnet_build_poll_reply(uint8_t *p, uint16_t universe)
     artnet_names_get(sname, sizeof(sname), lname, sizeof(lname));
     memcpy(p + 26, sname, sizeof(sname));
     memcpy(p + 44, lname, sizeof(lname));
-    snprintf((char *)p + 108, 64, "#0001 [%04u] OK",
-             (unsigned)(artnet_get_pkt_count() % 10000u));  /* NodeReport */
+    /* NodeReport: status code, counter of replies sent, text */
+    s_reply_count = (s_reply_count + 1) % 10000u;
+    snprintf((char *)p + 108, 64, "#0001 [%04u] OK", (unsigned)s_reply_count);
     p[173] = 1;                                 /* NumPortsLo: one port */
     p[174] = 0x80;                              /* PortTypes[0]: DMX512 output */
-    p[182] = 0x80;                              /* GoodOutput[0]: data transmitted */
+    p[182] = artnet_good_output();              /* GoodOutput[0]: active / merge / LTP */
     p[190] = universe & 0x0F;                   /* SwOut[0] */
     p[200] = 0x00;                              /* Style: StNode */
     memcpy(p + 201, mac, 6);                    /* MAC */
@@ -153,6 +172,9 @@ size_t artnet_build_poll_reply(uint8_t *p, uint16_t universe)
     p[211] = 1;                                 /* BindIndex */
     p[212] = 0x01 | 0x04 | 0x08                 /* web config, DHCP capable, 15-bit */
            | (net.dhcp ? 0x02 : 0);             /* IP set by DHCP */
+    /* Status3 (Art-Net 4): bits 7-6 failsafe state (00 hold, 01 zero, 10 full),
+       bit 5 = failsafe is supported */
+    p[217] = (uint8_t)(artnet_get_failsafe() << 6) | 0x20;
 
     return ARTNET_POLL_REPLY_LEN;
 }
