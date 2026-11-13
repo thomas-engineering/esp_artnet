@@ -21,7 +21,7 @@ td:first-child{color:#666;font-size:.9em;width:45%}
 .bn{font-size:9px;color:#888;margin-top:2px}
 hr{border:none;border-top:1px solid #eee;margin:20px 0}
 label{display:block;font-size:.9em;margin-bottom:3px}
-input[type=text],input[type=number],input[type=file]{width:100%;box-sizing:border-box;padding:10px 8px;min-height:44px;margin-bottom:8px;border:1px solid #ccc;border-radius:4px;font-size:1em}
+input[type=text],input[type=number],input[type=file],select{width:100%;box-sizing:border-box;padding:10px 8px;min-height:44px;margin-bottom:8px;border:1px solid #ccc;border-radius:4px;font-size:1em}
 button{min-height:48px;padding:0 20px;border:none;border-radius:4px;font-size:1em;cursor:pointer;background:#0070d2;color:#fff;margin-bottom:8px}
 .s{background:#555}
 #msg{margin-top:8px;font-size:.85em}
@@ -48,9 +48,9 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <tr><td>Firmware</td><td id='ver'>&#8211;</td></tr>
 <tr><td>IP Address</td><td id='ip'>&#8211;</td></tr>
 <tr><td>WiFi RSSI</td><td id='rs'>&#8211;</td></tr>
-<tr><td>Art-Net Universe</td><td id='un'>&#8211;</td></tr>
 <tr><td>Art-Net Net</td><td id='nt'>&#8211;</td></tr>
 <tr><td>Art-Net Sub-net</td><td id='sn'>&#8211;</td></tr>
+<tr><td>Art-Net Universe</td><td id='un'>&#8211;</td></tr>
 <tr><td>Art-Net</td><td id='pp'>&#8211;</td></tr>
 <tr><td>Art-Net short name<br>(max 17)</td><td><div class='ne'><input type='text' id='nms' maxlength='17' oninput="this.dataset.d=1"><button onclick="sname('nms','name_short')">Save</button></div></td></tr>
 <tr><td>Art-Net long name<br>(max 63)</td><td><div class='ne'><input type='text' id='nml' maxlength='63' oninput="this.dataset.d=1"><button onclick="sname('nml','name_long')">Save</button></div></td></tr>
@@ -67,6 +67,8 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <div class='uvw'><button class='adj' type='button' onclick="ud('usub',-1,15)">&#8722;</button><input type='number' id='usub' min='0' max='15' value='0' onchange="cl('usub',15)"><button class='adj' type='button' onclick="ud('usub',1,15)">+</button><button class='sav' onclick='su()'>Save</button></div>
 <label for='uv'>Universe (0&#8211;15)</label>
 <div class='uvw'><button class='adj' type='button' onclick="ud('uv',-1,15)">&#8722;</button><input type='number' id='uv' min='0' max='15' value='0' onchange="cl('uv',15)"><button class='adj' type='button' onclick="ud('uv',1,15)">+</button><button class='sav' onclick='su()'>Save</button></div>
+<label for='fs'>When Art-Net data stops (after 6 s)</label>
+<select id='fs' onchange='sf2()'><option value='hold'>Hold the last values</option><option value='zero'>All channels off (0)</option><option value='full'>All channels full (255)</option></select>
 <hr>
 <h3>Network Configuration</h3>
 <label class='rl'><input type='radio' name='ipmode' id='nd' value='dhcp' checked onchange='nt()'><span>DHCP (automatic)</span></label>
@@ -117,11 +119,11 @@ function ref(){
     [['nms',d.name_short],['nml',d.name_long]].forEach(function(p){
       var e=document.getElementById(p[0]);
       if(!e.dataset.d&&document.activeElement!==e)e.value=p[1]||'';
-    });document.getElementById('ip').textContent=d.ip;document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('un').textContent=d.universe;document.getElementById('nt').textContent=d.universe>>8;document.getElementById('sn').textContent=(d.universe>>4)&15;var p=document.getElementById('pp');p.textContent=d.artnet_pps+' pkt/s';p.style.color=d.artnet_pps>0?'green':'';for(var i=0;i<48&&i<d.dmx.length;i++){
+    });document.getElementById('ip').textContent=d.ip;document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('un').textContent=(d.universe&15)+' (port-address '+d.universe+')';document.getElementById('nt').textContent=d.universe>>8;document.getElementById('sn').textContent=(d.universe>>4)&15;var p=document.getElementById('pp');p.textContent=d.artnet_pps+' pkt/s';p.style.color=d.artnet_pps>0?'green':'';for(var i=0;i<48&&i<d.dmx.length;i++){
       var f=document.getElementById('f'+i);if(f)f.style.height=(d.dmx[i]/2.55).toFixed(0)+'%';
     }
     if(!ini){
-      ini=true;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('unet').value=d.universe>>8;document.getElementById('usub').value=(d.universe>>4)&15;document.getElementById('uv').value=d.universe&15;if(d.net_mode==='static'){
+      ini=true;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('fs').value=d.failsafe||'hold';document.getElementById('unet').value=d.universe>>8;document.getElementById('usub').value=(d.universe>>4)&15;document.getElementById('uv').value=d.universe&15;if(d.net_mode==='static'){
         document.getElementById('ns').checked=true;document.getElementById('sf').style.display='';document.getElementById('sa').value=d.s_ip||'';document.getElementById('sk').value=d.s_nm||'';document.getElementById('sg').value=d.s_gw||'';document.getElementById('sd').value=d.s_dns||'';
       }
     }
@@ -184,6 +186,22 @@ function sname(id,key){
     }else{
       sm('Error: '+(d.msg||''),0);
     }
+  }).catch(function(){
+    sm('Request failed.',0);
+  });
+}
+function sf2(){
+  var e=document.getElementById('fs');
+  fetch('/api/config',{
+    method:'POST',headers:{
+      'Content-Type':'application/json'
+    },body:JSON.stringify({
+      failsafe:e.value
+    })
+  }).then(function(r){
+    return r.json();
+  }).then(function(d){
+    sm(d.ok?'Saved!':'Error: '+(d.msg||''),d.ok);
   }).catch(function(){
     sm('Request failed.',0);
   });

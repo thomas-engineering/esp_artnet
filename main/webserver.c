@@ -4,6 +4,7 @@
 #include "dmx.h"
 #include "ota.h"
 #include "provisioning.h"
+#include "http_util.h"
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -68,14 +69,16 @@ static void restart_task(void *arg)
 static esp_err_t handle_root(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    /* The page changes with the firmware: browsers must not show an old copy */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_sendstr(req, status_html_start);
     return ESP_OK;
 }
 
 /* ── GET /api/status ──────────────────────────────────────────────────── */
 
-static uint32_t s_last_pkt  = 0;
-static int64_t  s_last_us   = 0;
+/* Index = artnet_failsafe_t */
+static const char *const s_failsafe_names[] = { "hold", "zero", "full" };
 
 static esp_err_t handle_status(httpd_req_t *req)
 {
@@ -96,16 +99,9 @@ static esp_err_t handle_status(httpd_req_t *req)
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) rssi = ap.rssi;
 
-    /* Art-Net pps */
-    uint32_t now_pkt = artnet_get_pkt_count();
-    int64_t  now_us  = esp_timer_get_time();
-    uint32_t pps     = 0;
-    if (s_last_us > 0) {
-        float dt = (now_us - s_last_us) / 1e6f;
-        if (dt > 0.0f) pps = (uint32_t)((now_pkt - s_last_pkt) / dt);
-    }
-    s_last_pkt = now_pkt;
-    s_last_us  = now_us;
+    /* Art-Net packet rate, measured by the receiver (independent of how
+       many browsers poll this page) */
+    uint32_t pps = artnet_get_pps();
 
     /* Requested window of 48 DMX channels (3 rows of 16), start offset via ?off= */
     int off = 0;
@@ -150,6 +146,7 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"artnet_pps\":%u,"
              "\"dmx\":%s,"
              "\"auto_ota\":%s,"
+             "\"failsafe\":\"%s\","
              "\"name_short\":\"%s\","
              "\"name_long\":\"%s\","
              "\"net_mode\":\"%s\","
@@ -158,8 +155,9 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"s_gw\":\"%s\","
              "\"s_dns\":\"%s\"}",
              ver, ip_str, rssi,
-             (unsigned)provisioning_get_universe(), (unsigned)pps, dmx_arr,
+             (unsigned)artnet_get_universe(), (unsigned)pps, dmx_arr,
              ota_get_auto_enabled() ? "true" : "false",
+             s_failsafe_names[artnet_get_failsafe()],
              eshort, elong,
              netcfg.dhcp ? "dhcp" : "static",
              netcfg.ip, netcfg.netmask, netcfg.gateway, netcfg.dns);
@@ -172,13 +170,11 @@ static esp_err_t handle_status(httpd_req_t *req)
 
 static esp_err_t handle_config(httpd_req_t *req)
 {
-    char body[512] = {0};
-    int  len = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (len <= 0) {
-        send_json(req, "{\"ok\":false,\"msg\":\"Empty body\"}");
+    char body[512];
+    if (http_recv_body(req, body, sizeof(body)) < 0) {
+        send_json(req, "{\"ok\":false,\"msg\":\"Empty or too long body\"}");
         return ESP_OK;
     }
-    body[len] = '\0';
 
     cJSON *root = cJSON_Parse(body);
     if (!root) {
@@ -187,6 +183,13 @@ static esp_err_t handle_config(httpd_req_t *req)
     }
 
     bool restart = false;
+
+    cJSON *fs_item = cJSON_GetObjectItem(root, "failsafe");
+    if (cJSON_IsString(fs_item)) {
+        for (int i = 0; i < 3; i++)
+            if (strcmp(fs_item->valuestring, s_failsafe_names[i]) == 0)
+                artnet_set_failsafe((artnet_failsafe_t)i);
+    }
 
     cJSON *univ_item = cJSON_GetObjectItem(root, "universe");
     if (cJSON_IsNumber(univ_item)) {
@@ -283,9 +286,8 @@ static void url_ota_progress_cb(int pct)
 
 static void ota_url_task(void *arg)
 {
+    /* The caller holds the OTA lock */
     char *url = (char *)arg;
-    s_ota_phase = OTA_PHASE_ACTIVE;
-    s_ota_pct   = 0;
     esp_err_t err = ota_flash_url(url, url_ota_progress_cb);
     free(url);
     if (err == ESP_OK) {
@@ -295,19 +297,18 @@ static void ota_url_task(void *arg)
     } else {
         snprintf(s_ota_errmsg, sizeof(s_ota_errmsg), "%s", esp_err_to_name(err));
         s_ota_phase = OTA_PHASE_ERROR;
+        ota_unlock();
     }
     vTaskDelete(NULL);
 }
 
 static esp_err_t handle_ota_url(httpd_req_t *req)
 {
-    char body[512] = {0};
-    int  len = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (len <= 0) {
-        send_json(req, "{\"ok\":false,\"msg\":\"Empty body\"}");
+    char body[512];
+    if (http_recv_body(req, body, sizeof(body)) < 0) {
+        send_json(req, "{\"ok\":false,\"msg\":\"Empty or too long body\"}");
         return ESP_OK;
     }
-    body[len] = '\0';
 
     cJSON *root = cJSON_Parse(body);
     cJSON *url_item = root ? cJSON_GetObjectItem(root, "url") : NULL;
@@ -324,8 +325,21 @@ static esp_err_t handle_ota_url(httpd_req_t *req)
         return ESP_OK;
     }
 
+    if (!ota_try_lock()) {
+        free(url);
+        send_json(req, "{\"ok\":false,\"msg\":\"Another firmware update is running\"}");
+        return ESP_OK;
+    }
+    s_ota_phase = OTA_PHASE_ACTIVE;
+    s_ota_pct   = 0;
+    if (xTaskCreate(ota_url_task, "ota_url", 8192, url, 4, NULL) != pdPASS) {
+        free(url);
+        s_ota_phase = OTA_PHASE_IDLE;
+        ota_unlock();
+        send_json(req, "{\"ok\":false,\"msg\":\"OOM\"}");
+        return ESP_OK;
+    }
     send_json(req, "{\"ok\":true,\"msg\":\"Flashing firmware, device will restart...\"}");
-    xTaskCreate(ota_url_task, "ota_url", 8192, url, 4, NULL);
     return ESP_OK;
 }
 
@@ -348,10 +362,16 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
         return ESP_OK;
     }
 
+    if (!ota_try_lock()) {
+        send_json(req, "{\"ok\":false,\"msg\":\"Another firmware update is running\"}");
+        return ESP_OK;
+    }
+
     esp_ota_handle_t ota_handle;
     esp_err_t err = esp_ota_begin(part, req->content_len, &ota_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        ota_unlock();
         send_json(req, "{\"ok\":false,\"msg\":\"OTA begin failed\"}");
         return ESP_OK;
     }
@@ -359,18 +379,23 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
     char   buf[512];
     size_t remaining = req->content_len;
     bool   write_ok  = true;
+    int    timeouts  = 0;
 
     s_ota_phase = OTA_PHASE_ACTIVE;
     s_ota_pct   = 0;
 
-    while (remaining > 0 && write_ok) {
+    while (remaining > 0) {
         size_t to_recv = remaining < sizeof(buf) ? remaining : sizeof(buf);
         int received = httpd_req_recv(req, buf, to_recv);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+            continue;                           /* slow link: try again */
+        }
         if (received <= 0) {
             ESP_LOGE(TAG, "recv error during upload");
             write_ok = false;
             break;
         }
+        timeouts = 0;
         err = esp_ota_write(ota_handle, buf, received);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
@@ -381,11 +406,17 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
         s_ota_pct = (int)((req->content_len - remaining) * 100 / req->content_len);
     }
 
-    err = esp_ota_end(ota_handle);
-    if (!write_ok || err != ESP_OK) {
+    if (!write_ok) {
+        esp_ota_abort(ota_handle);              /* incomplete image: discard it */
+        err = ESP_FAIL;
+    } else {
+        err = esp_ota_end(ota_handle);          /* validates the image */
+    }
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "OTA upload failed");
         strlcpy(s_ota_errmsg, "Flash write failed", sizeof(s_ota_errmsg));
         s_ota_phase = OTA_PHASE_ERROR;
+        ota_unlock();
         send_json(req, "{\"ok\":false,\"msg\":\"Flash write failed\"}");
         return ESP_OK;
     }
@@ -395,6 +426,7 @@ static esp_err_t handle_ota_upload(httpd_req_t *req)
         ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
         strlcpy(s_ota_errmsg, "Could not set boot partition", sizeof(s_ota_errmsg));
         s_ota_phase = OTA_PHASE_ERROR;
+        ota_unlock();
         send_json(req, "{\"ok\":false,\"msg\":\"Could not set boot partition\"}");
         return ESP_OK;
     }

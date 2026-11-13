@@ -9,6 +9,7 @@ idf_component_register(
         "ota.c"
         "led.c"
         "webserver.c"
+        "http_util.c"
     INCLUDE_DIRS "." "debug"
     EMBED_TXTFILES
         "web/status.html"

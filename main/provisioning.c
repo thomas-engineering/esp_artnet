@@ -1,5 +1,6 @@
 #include "provisioning.h"
 #include "led.h"
+#include "http_util.h"
 #include <string.h>
 #include <stdlib.h>
 #include "esp_app_desc.h"
@@ -9,6 +10,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_http_server.h"
@@ -30,12 +32,31 @@
 #define WIFI_FAIL_BIT   BIT1
 #define MAX_RETRIES     5
 
+/* IEEE 802.11 limits; buffers hold the value plus a terminator */
+#define SSID_MAX_LEN    32
+#define PASS_MAX_LEN    64
+
+/* Reconnect back-off after the connection was lost at runtime */
+#define RECONNECT_MIN_MS    1000
+#define RECONNECT_MAX_MS    30000
+/* Portal fallback with stored credentials: retry the connection this often */
+#define FALLBACK_RETRY_MS   30000
+
 static const char *TAG = "prov";
 static EventGroupHandle_t s_eg;
 static int  s_retry = 0;
 static bool s_sta_connecting = false;
 static httpd_handle_t s_server = NULL;
 static esp_netif_t *s_sta_netif = NULL;
+
+/* Set once the node is online: from then on a lost connection is retried forever */
+static bool s_online = false;
+static esp_timer_handle_t s_reconnect_timer;
+static uint32_t s_backoff_ms = RECONNECT_MIN_MS;
+
+/* Network configuration is cached in RAM (read on every status request) */
+static net_config_t s_netcfg;
+static bool s_netcfg_loaded = false;
 
 /* ── NVS helpers ──────────────────────────────────────────────────────── */
 
@@ -71,6 +92,10 @@ void provisioning_save_universe(uint16_t univ)
 
 void provisioning_get_net_config(net_config_t *cfg)
 {
+    if (s_netcfg_loaded) {
+        *cfg = s_netcfg;
+        return;
+    }
     cfg->dhcp = true;
     cfg->ip[0] = cfg->netmask[0] = cfg->gateway[0] = cfg->dns[0] = '\0';
 
@@ -88,6 +113,8 @@ void provisioning_get_net_config(net_config_t *cfg)
     sz = sizeof(cfg->dns);     nvs_get_str(h, NVS_KEY_S_DNS, cfg->dns,     &sz);
 
     nvs_close(h);
+    s_netcfg = *cfg;
+    s_netcfg_loaded = true;
 }
 
 void provisioning_save_net_config(const net_config_t *cfg)
@@ -103,6 +130,7 @@ void provisioning_save_net_config(const net_config_t *cfg)
     }
     nvs_commit(h);
     nvs_close(h);
+    s_netcfg_loaded = false;        /* re-read: DHCP mode keeps the old static values */
 }
 
 uint16_t provisioning_get_universe(void)
@@ -117,11 +145,17 @@ uint16_t provisioning_get_universe(void)
 
 void provisioning_clear(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_erase_all(h);
-    nvs_commit(h);
-    nvs_close(h);
+    /* Factory reset: WiFi + network + universe, and the settings the other
+       modules keep (Art-Net names / failsafe, automatic-update flag). */
+    static const char *const namespaces[] = { NVS_NAMESPACE, "artnet", "ota" };
+    for (size_t i = 0; i < sizeof(namespaces) / sizeof(namespaces[0]); i++) {
+        nvs_handle_t h;
+        if (nvs_open(namespaces[i], NVS_READWRITE, &h) != ESP_OK) continue;
+        nvs_erase_all(h);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    s_netcfg_loaded = false;
 }
 
 /* ── WiFi event handler ───────────────────────────────────────────────── */
@@ -147,6 +181,11 @@ static void apply_static_ip(const net_config_t *cfg)
     ESP_LOGI(TAG, "Static IP: %s / %s  gw %s", cfg->ip, cfg->netmask, cfg->gateway);
 }
 
+static void reconnect_timer_cb(void *arg)
+{
+    esp_wifi_connect();
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
@@ -157,18 +196,33 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
             esp_wifi_connect();
         }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (!s_sta_connecting) return;
-        if (s_retry < MAX_RETRIES) {
-            esp_wifi_connect();
-            s_retry++;
-            ESP_LOGW(TAG, "Reconnecting (%d/%d)...", s_retry, MAX_RETRIES);
-        } else {
-            xEventGroupSetBits(s_eg, WIFI_FAIL_BIT);
+        if (s_sta_connecting) {
+            /* First connection attempt at boot: limited retries, then portal */
+            if (s_retry < MAX_RETRIES) {
+                esp_wifi_connect();
+                s_retry++;
+                ESP_LOGW(TAG, "Reconnecting (%d/%d)...", s_retry, MAX_RETRIES);
+            } else {
+                xEventGroupSetBits(s_eg, WIFI_FAIL_BIT);
+            }
+        } else if (s_online) {
+            /* Connection lost at runtime (router restart, weak signal):
+               keep trying forever, with a growing pause between attempts. */
+            led_set_state(LED_CONNECTING);
+            ESP_LOGW(TAG, "WiFi connection lost — reconnecting in %u ms",
+                     (unsigned)s_backoff_ms);
+            esp_timer_stop(s_reconnect_timer);
+            esp_timer_start_once(s_reconnect_timer, (uint64_t)s_backoff_ms * 1000);
+            s_backoff_ms *= 2;
+            if (s_backoff_ms > RECONNECT_MAX_MS) s_backoff_ms = RECONNECT_MAX_MS;
         }
+        /* Portal fallback: provisioning_start() retries on its own schedule */
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = data;
         ESP_LOGI(TAG, "Connected — IP: " IPSTR, IP2STR(&ev->ip_info.ip));
         s_retry = 0;
+        s_backoff_ms = RECONNECT_MIN_MS;
+        if (s_online) led_set_state(LED_CONNECTED);
         xEventGroupSetBits(s_eg, WIFI_CONN_BIT);
     }
 }
@@ -201,22 +255,35 @@ static void dns_task(void *arg)
                          (struct sockaddr *)&client, &clen);
         if (n < 12) continue;
 
-        /* Build response: copy query, adjust header flags, ANCOUNT=1 */
-        memcpy(resp, buf, n);
+        /* Find the end of the first question: labels, zero byte, QTYPE, QCLASS */
+        int q = 12;
+        while (q < n && buf[q] != 0) q += buf[q] + 1;
+        int qend = q + 5;
+        if (buf[q] != 0 || qend > n) continue;          /* malformed */
+        uint16_t qtype = ((uint16_t)buf[q + 1] << 8) | buf[q + 2];
+
+        /* Response = header + that one question (+ answer); anything the
+           client appended after it (e.g. EDNS records) is dropped. */
+        memcpy(resp, buf, qend);
         resp[2] = 0x81;        /* QR=1, AA=1 */
         resp[3] = 0x80;        /* RA=1, RCODE=0 */
-        resp[6] = 0x00;        /* ANCOUNT hi */
-        resp[7] = 0x01;        /* ANCOUNT lo */
+        resp[4] = 0x00; resp[5] = 0x01;                 /* QDCOUNT = 1 */
+        resp[6] = 0x00; resp[7] = 0x00;                 /* ANCOUNT = 0 */
+        resp[8] = resp[9] = resp[10] = resp[11] = 0;    /* NSCOUNT, ARCOUNT */
+        int rlen = qend;
 
-        /* Append A-record answer (name = compressed ptr to offset 12) */
-        int rlen = n;
-        resp[rlen++] = 0xc0; resp[rlen++] = 0x0c; /* NAME ptr */
-        resp[rlen++] = 0x00; resp[rlen++] = 0x01;  /* TYPE  = A */
-        resp[rlen++] = 0x00; resp[rlen++] = 0x01;  /* CLASS = IN */
-        resp[rlen++] = 0x00; resp[rlen++] = 0x00;
-        resp[rlen++] = 0x00; resp[rlen++] = 0x3c;  /* TTL   = 60 s */
-        resp[rlen++] = 0x00; resp[rlen++] = 0x04;  /* RDLEN = 4 */
-        memcpy(resp + rlen, PORTAL_A, 4); rlen += 4;
+        if (qtype == 1) {
+            /* A query: answer with the portal address (name = ptr to offset 12).
+               Other types (AAAA, ...) get an empty answer, so clients fall back to A. */
+            resp[7] = 0x01;                            /* ANCOUNT = 1 */
+            resp[rlen++] = 0xc0; resp[rlen++] = 0x0c;  /* NAME ptr */
+            resp[rlen++] = 0x00; resp[rlen++] = 0x01;  /* TYPE  = A */
+            resp[rlen++] = 0x00; resp[rlen++] = 0x01;  /* CLASS = IN */
+            resp[rlen++] = 0x00; resp[rlen++] = 0x00;
+            resp[rlen++] = 0x00; resp[rlen++] = 0x3c;  /* TTL   = 60 s */
+            resp[rlen++] = 0x00; resp[rlen++] = 0x04;  /* RDLEN = 4 */
+            memcpy(resp + rlen, PORTAL_A, 4); rlen += 4;
+        }
 
         sendto(sock, resp, rlen, 0, (struct sockaddr *)&client, clen);
     }
@@ -270,6 +337,7 @@ static esp_err_t handle_root(httpd_req_t *req)
     snprintf(sub, sizeof(sub), "%u", (pa >> 4) & 0x0F);
     snprintf(uni, sizeof(uni), "%u", pa & 0x0F);
     httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     send_portal_page(req, net, sub, uni, esp_app_get_description()->version);
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
@@ -348,25 +416,31 @@ static void url_decode(char *s)
 
 static esp_err_t handle_save(httpd_req_t *req)
 {
-    char body[256] = {0};
-    int len = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (len <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty");
+    /* URL-encoded form: every character may take three bytes ("%XX") */
+    char body[3 * (SSID_MAX_LEN + PASS_MAX_LEN) + 96];
+    if (http_recv_body(req, body, sizeof(body)) < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty or too long");
         return ESP_FAIL;
     }
 
-    char ssid[64] = {0}, pass[64] = {0};
+    char ssid[3 * SSID_MAX_LEN + 1] = {0}, pass[3 * PASS_MAX_LEN + 1] = {0};
     char net_str[8] = {0}, sub_str[8] = {0}, uni_str[8] = {0};
-    httpd_query_key_value(body, "ssid", ssid, sizeof(ssid));
-    httpd_query_key_value(body, "pass", pass, sizeof(pass));
+    esp_err_t e_ssid = httpd_query_key_value(body, "ssid", ssid, sizeof(ssid));
+    esp_err_t e_pass = httpd_query_key_value(body, "pass", pass, sizeof(pass));
     httpd_query_key_value(body, "anet", net_str, sizeof(net_str));
     httpd_query_key_value(body, "asub", sub_str, sizeof(sub_str));
     httpd_query_key_value(body, "auni", uni_str, sizeof(uni_str));
     url_decode(ssid);
     url_decode(pass);
 
-    if (ssid[0] == '\0') {
+    if (e_ssid != ESP_OK || ssid[0] == '\0') {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID missing");
+        return ESP_FAIL;
+    }
+    /* Reject instead of silently truncating: a cut-off password never connects */
+    if (strlen(ssid) > SSID_MAX_LEN || strlen(pass) > PASS_MAX_LEN ||
+        e_pass == ESP_ERR_HTTPD_RESULT_TRUNC) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID or password too long");
         return ESP_FAIL;
     }
 
@@ -456,21 +530,26 @@ static void start_ap_mode(void)
 
 static bool try_sta(const char *ssid, const char *pass)
 {
+    /* The fields are not strings: a 32-character SSID or a 64-character key
+       fills them completely, without a terminator. */
     wifi_config_t sta_cfg = {0};
-    strlcpy((char *)sta_cfg.sta.ssid,     ssid, sizeof(sta_cfg.sta.ssid));
-    strlcpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password));
+    memcpy(sta_cfg.sta.ssid,     ssid, strnlen(ssid, sizeof(sta_cfg.sta.ssid)));
+    memcpy(sta_cfg.sta.password, pass, strnlen(pass, sizeof(sta_cfg.sta.password)));
 
     s_sta_connecting = true;
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
     esp_wifi_start();
+    /* Modem sleep delays and bunches incoming Art-Net packets: keep the radio on */
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     EventBits_t bits = xEventGroupWaitBits(s_eg,
                                            WIFI_CONN_BIT | WIFI_FAIL_BIT,
                                            pdFALSE, pdFALSE,
                                            pdMS_TO_TICKS(15000));
     s_sta_connecting = false;
-    return (bits & WIFI_CONN_BIT) != 0;
+    s_online = (bits & WIFI_CONN_BIT) != 0;     /* from now on: reconnect forever */
+    return s_online;
 }
 
 /* ── Public API ───────────────────────────────────────────────────────── */
@@ -479,20 +558,25 @@ void provisioning_start(void)
 {
     s_eg = xEventGroupCreate();
 
-    esp_netif_init();
-    esp_event_loop_create_default();
+    /* Without these nothing works: fail loudly (abort + reboot) */
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_sta_netif = esp_netif_create_default_wifi_sta();
     esp_netif_set_hostname(s_sta_netif, "dmx-artnet");
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&wcfg);
+    ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
 
-    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,  on_event, NULL);
-    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL);
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,  on_event, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL));
 
-    char ssid[64], pass[64];
-    if (load_credentials(ssid, sizeof(ssid), pass, sizeof(pass))) {
+    const esp_timer_create_args_t targs = { .callback = reconnect_timer_cb, .name = "wifi_reconn" };
+    ESP_ERROR_CHECK(esp_timer_create(&targs, &s_reconnect_timer));
+
+    char ssid[SSID_MAX_LEN + 1], pass[PASS_MAX_LEN + 1];
+    bool have_creds = load_credentials(ssid, sizeof(ssid), pass, sizeof(pass));
+    if (have_creds) {
         ESP_LOGI(TAG, "Stored SSID: \"%s\" — connecting...", ssid);
         led_set_state(LED_CONNECTING);
         if (try_sta(ssid, pass)) {
@@ -509,6 +593,28 @@ void provisioning_start(void)
     led_set_state(LED_PROVISIONING);
     start_ap_mode();
 
-    /* Block until /save restarts the device */
-    xEventGroupWaitBits(s_eg, WIFI_CONN_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    /* Stay in the portal until /save restarts the device. If credentials are
+       stored (the network was just not reachable at boot, e.g. after a power
+       cut), keep retrying in the background and restart once it works. */
+    for (;;) {
+        EventBits_t bits = xEventGroupWaitBits(s_eg, WIFI_CONN_BIT, pdFALSE, pdTRUE,
+                                               pdMS_TO_TICKS(FALLBACK_RETRY_MS));
+        if (bits & WIFI_CONN_BIT) {
+            ESP_LOGI(TAG, "Stored network is back — restarting into normal mode");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        }
+        if (!have_creds) continue;
+
+        /* A connection attempt scans other channels and disturbs the access
+           point, so leave it alone while somebody is using the portal. */
+        wifi_sta_list_t clients;
+        if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num > 0) continue;
+
+        net_config_t netcfg;
+        provisioning_get_net_config(&netcfg);
+        if (!netcfg.dhcp) apply_static_ip(&netcfg);
+        ESP_LOGI(TAG, "Retrying stored network \"%s\"", ssid);
+        esp_wifi_connect();
+    }
 }

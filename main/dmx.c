@@ -44,6 +44,9 @@ void dmx_init(void)
     uart_param_config(DMX_UART_NUM, &uart_cfg);
     uart_set_pin(DMX_UART_NUM, DMX_TX_GPIO, DMX_RX_GPIO,
                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    /* In transmit mode the transceiver's RO output is high impedance: without
+       a pull-up the RX input floats and picks up noise. */
+    gpio_set_pull_mode(DMX_RX_GPIO, GPIO_PULLUP_ONLY);
 
     ESP_LOGI(TAG, "DMX init: UART1 TX=GPIO%d RX=GPIO%d DE=GPIO%d @ %d baud",
              DMX_TX_GPIO, DMX_RX_GPIO, DMX_DE_GPIO, DMX_BAUD);
@@ -55,8 +58,9 @@ void dmx_send(const uint8_t *data, uint16_t length)
 {
     if (dmx_debug_tx_disabled()) return;
 
-    /* Wait for previous frame to finish transmitting */
-    uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(50));
+    /* Wait for the previous frame to finish (a full frame takes ~23 ms).
+       If it has not, skip this one: a BREAK now would cut the frame in two. */
+    if (uart_wait_tx_done(DMX_UART_NUM, pdMS_TO_TICKS(50)) != ESP_OK) return;
 
     dmx_debug_frame_sent(data, length > DMX_CHANNELS ? DMX_CHANNELS : length);
 

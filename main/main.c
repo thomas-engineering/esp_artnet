@@ -3,6 +3,9 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_app_desc.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "nvs_flash.h"
 #include "mdns.h"
 #include "driver/gpio.h"
@@ -15,7 +18,8 @@
 #include "webserver.h"
 
 /* GPIO0 = BOOT button on Freenove ESP32-S3-WROOM.
-   Hold for 3 s (at any time, not only at power-on) to clear WiFi credentials. */
+   Hold for 3 s while the node is running to reset all settings. (Holding it
+   during power-on does not work: GPIO0 low at reset selects download mode.) */
 #define BOOT_GPIO               0
 #define FACTORY_RESET_HOLD_MS   3000
 #define BOOT_POLL_MS            50
@@ -76,6 +80,12 @@ static void dmx_output_task(void *arg)
     }
 }
 
+/* A new address (DHCP renewal, reconnect) is announced to Art-Net controllers */
+static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    artnet_announce();
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Firmware version: %s", esp_app_get_description()->version);
@@ -89,6 +99,14 @@ void app_main(void)
     led_init();
     check_factory_reset();
 
+    /* DMX runs from the start, independent of the network: the bus is driven
+       (idle frames) while the node connects or sits in the setup portal.
+       Pinned to core 1 so that its short interrupts-off BREAK sequence does
+       not delay the WiFi stack on core 0. */
+    dmx_init();           /* UART1 on GPIO41/42 + DE on GPIO1 */
+    xTaskCreatePinnedToCore(dmx_output_task, "dmx_out", 4096, NULL, 6, NULL, 1);
+    xTaskCreate(boot_button_task, "boot_btn", 4096, NULL, 3, NULL);
+
     provisioning_start(); /* blocks until IP obtained */
 
     mdns_init();
@@ -97,11 +115,15 @@ void app_main(void)
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     ESP_LOGI("main", "mDNS hostname: dmx-artnet.local");
 
-    dmx_init();           /* UART1 on GPIO41/42 + DE on GPIO1 */
     artnet_start(provisioning_get_universe());
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
     webserver_start();
     ota_start();
 
-    xTaskCreate(boot_button_task, "boot_btn", 2048, NULL, 3, NULL);
-    xTaskCreate(dmx_output_task,  "dmx_out",  4096, NULL, 6, NULL);
+    /* Rollback is enabled: a freshly updated image stays "pending" until it
+       is confirmed, and would be rolled back at the next reset. Reaching this
+       point (WiFi connected, all services started) is the self-test. */
+    if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+        ESP_LOGI(TAG, "Running firmware confirmed");
+    }
 }

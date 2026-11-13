@@ -11,6 +11,12 @@ void ota_start(void);
 bool ota_get_auto_enabled(void);
 void ota_set_auto_enabled(bool enabled);
 
+/* Only one firmware update may run at a time (automatic check, flash from
+   URL, upload). ota_try_lock() returns false if another one is in progress;
+   every successful lock must be released with ota_unlock(). */
+bool ota_try_lock(void);
+void ota_unlock(void);
+
 /* Called periodically during ota_flash_url() with the current progress (0–100). */
 typedef void (*ota_progress_cb_t)(int pct);
 
