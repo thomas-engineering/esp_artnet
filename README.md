@@ -161,7 +161,9 @@ portal**:
    automatically (iOS, Android, and most desktop OSes detect it).
    If it does not open automatically, navigate to **http://192.168.4.1**.
 3. Click **Scan networks** to populate the dropdown with nearby SSIDs.
-4. Select your network, enter its password, and tap **Connect**.
+4. Select your network, enter its password, optionally set the Art-Net
+   **net** (0–127), **sub-net** (0–15) and **universe** (0–15), and tap
+   **Save & connect**.
 5. The device restarts, connects to your network, and is reachable at
    **http://dmx-artnet.local** (mDNS) or at the IP shown in your router's
    DHCP table (hostname: `dmx-artnet`).
@@ -181,14 +183,25 @@ Once connected, the node serves a status and configuration page at
 ### Status
 
 The top of the page auto-refreshes every 2 seconds and shows firmware
-version, IP address, WiFi RSSI, active Art-Net universe, incoming packet
-rate, and a live bar graph for DMX channels 1–16.
+version, IP address, WiFi RSSI, active Art-Net universe (the 15-bit
+port-address) split into its **Net** and **Sub-net** parts, incoming packet
+rate, and a live bar graph for DMX channels 1–48 (three rows of 16, paged with
+the arrow buttons).
+
+The **Art-Net short name** (max. 17 characters) and **long name** (max. 63) are
+editable fields with a **Save** button beside each. They are the names the node
+reports in its ArtPollReply, the same ones a controller can set with ArtAddress,
+and are stored in NVS. Saving an empty field resets that name to its default;
+non-ASCII characters are replaced by `?`. The fields follow changes made
+remotely, unless you have unsaved edits in them.
 
 ### Art-Net Settings
 
-A large numeric input with **−** / **+** buttons lets you change the
-Art-Net universe at runtime (0–32767).  Pressing **Save** applies the
-change immediately — no reboot required.
+Three large numeric inputs with **−** / **+** buttons set the Art-Net
+port-address as defined by the standard: **Net** (0–127), **Sub-net** (0–15)
+and **Universe** (0–15). Values outside these ranges are clamped, and each
+**Save** button stores the complete address (`net × 256 + sub-net × 16 +
+universe`, 0–32767).  It applies immediately — no reboot required.  The WiFi setup portal has the same three fields.
 
 ### Network Configuration
 
@@ -200,7 +213,7 @@ Saving network settings restarts the device to apply them.
 
 | Method | Description |
 |---|---|
-| **Automatic updates** | Checkbox at the top of the section. Switches the 6-hourly GitHub check on or off; the choice is saved in flash and survives reboots (default: on). Manual updates always work. |
+| **Automatic updates** | Checkbox at the top of the section. Switches the 6-hourly GitHub check on or off; the choice is saved in flash and survives reboots (default: **off** — automatic updates only run after you tick it). Manual updates always work. |
 | **Flash from URL** | Enter an HTTPS URL to a `.bin` file (pre-filled with the latest GitHub release URL) and press **Flash from URL**. |
 | **Upload binary** | Select a local `.bin` file and press **Upload & flash**. |
 
@@ -231,12 +244,13 @@ The board has two onboard LEDs that indicate the current state:
 
 Firmware can be updated in two ways:
 
-**Automatic** — every 6 hours the firmware checks the GitHub release page of
-`thomas-engineering/esp_artnet` for a newer binary.  If a new release is
-found it downloads and verifies the image over HTTPS and reboots into the new
-slot.  It can be switched off with the **Automatic updates** checkbox in the web
-interface (setting is stored in NVS, default on).  After re-enabling, the next
-check happens at the next regular 6 h interval or after a reboot.
+**Automatic** — **off by default**. After you tick **Automatic updates** in the
+web interface (the setting is stored in NVS and survives reboots), the firmware
+checks the GitHub release page of `thomas-engineering/esp_artnet` for a newer
+binary 10 s after every boot and then every 6 hours.  If a new release is found
+it downloads and verifies the image over HTTPS and reboots into the new slot.
+Ticking the box does not start a check immediately: the next one happens at the
+next boot or the next 6 h interval.  Unticking it stops all checks.
 
 **Manual** — use the **Firmware Update** section of the web interface to
 flash a binary from a URL or upload one from disk (see [Web Interface](#web-interface)).
@@ -265,11 +279,80 @@ cd python_test_client
 python3 gui.py
 ```
 
+or, from the project root, in the background (detached from the terminal, errors
+go to `/tmp/esp_artnet_gui.log`):
+
+```bash
+./run_test_client.sh
+```
+
+### Discovering nodes (Scan)
+
+The node answers **ArtPoll** (opcode `0x2000`) with an **ArtPollReply**
+(`0x2100`, 239 bytes), so Art-Net controllers and the test client can find it.
+The reply contains the node's IP and MAC, its names, firmware version
+(minor.patch), the DHCP state and its single DMX output port with the
+configured universe. It is sent as a unicast to the address and port the poll
+came from.
+
+**ArtAddress** (`0x6000`) lets a controller reprogram the node remotely; the
+node answers with an ArtPollReply. Supported fields:
+
+| Field | Effect |
+|---|---|
+| NetSwitch, SubSwitch, SwOut[0] | 15-bit port-address of the output port. Applied only when bit 7 is set (`0x80 \| value`); `0x7F` and `0x00` mean *no change* (the node has no physical switches to reset to). The value is saved in NVS, like the web UI setting. |
+| PortName (17 chars), LongName (63 chars) | Node names shown in ArtPollReply; saved in NVS. Empty = unchanged. |
+| Command `0x02` / `0x03` / `0x04` | LEDs normal / muted / locate (fast white blink). The state is reported in the ArtPollReply status byte. |
+| Command `0x90` | Clear the DMX output buffer. |
+
+Other commands (merge modes etc.) are ignored. ArtAddress only addresses the
+single output port (BindIndex 0 or 1).
+
+**Unsolicited ArtPollReply:** the node broadcasts a reply (to the subnet's
+directed broadcast address, port 6454) once after boot. If a controller has
+polled with the TalkToMe flag *reply on change* (bit 1), it also broadcasts a
+reply whenever the universe, the names or the LED mode change, whether the
+change came from ArtAddress or from the web UI.
+
+**ArtIpProg** (`0xF800`) configures the node's IP settings remotely; the node
+answers with an **ArtIpProgReply** (`0xF900`) carrying its IP address, subnet
+mask, default gateway and DHCP state:
+
+| Command bits | Effect |
+|---|---|
+| `0x00` (no bits) | Query only: the reply reports the current settings. |
+| `0x80 \| 0x40` | Enable DHCP. |
+| `0x80 \| 0x08` / `0x04` / `0x20` | Program IP address / subnet mask / default gateway (static IP). Parts that are not selected keep their current value; the DNS server stays as configured, or falls back to the gateway. |
+| `0x80 \| 0x10` | "Return to defaults": switches to DHCP, which is this node's default. |
+
+Programming uses the same storage as the **Network Configuration** section of
+the web interface, and, like there, the node **restarts** to apply it. Invalid
+addresses or masks are rejected without a restart. Art-Net has no
+authentication, so anyone on the network can send this; if a wrong static
+address makes the node unreachable, hold the BOOT button for 3 s to reset the
+network settings.
+
+In the test client, **Scan** (next to the Target field) broadcasts an ArtPoll (sent from
+an ephemeral port, so the node's answer is not lost when another Art-Net program
+shares UDP port 6454) to
+`255.255.255.255` and to the `x.y.z.255` broadcast address of the default
+interface (assuming a /24 subnet) for 3 seconds and lists every device that
+answers, showing name, IP address, **Art-Net Port-Adr.** (as `net:sub-net:universe`,
+e.g. `1:2:3`) and type. Select one and press **Use selected** (or double-click) to
+copy its IP address and port-address into the Connection fields.
+
+**Node control** (below Scan) is enabled while a node answers an ArtPoll on the
+target address (checked every 2 s). It opens a test dialog for the functions
+above: set net / sub-net / universe, set the names, send the LED and clear
+commands, read or change the IP configuration (DHCP or static), poll the node, and ask for unsolicited replies. Every ArtPollReply the
+node sends is shown in the log, including broadcasts. By default the GUI's own
+universe follows an address change so the lamp keeps being controlled.
+
 ### GUI overview
 
 | Section | Controls |
 |---|---|
-| **Connection** | Target hostname or IP (`dmx-artnet.local`), Art-Net universe (0–32767), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** and **Police car** toggles |
+| **Connection** | Target hostname or IP (`dmx-artnet.local`) with **Scan** and **Node control** buttons, Art-Net **net** (0–127), **sub-net** (0–15) and **universe** (0–15), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** and **Police car** toggles |
 | **Color** | Red / Green / Blue sliders (Ch 1–3) + live color preview swatch |
 | **6-Channel Settings** | Ch 4 macro, Ch 6 program with one-click preset buttons, Ch 5 strobe/speed/sensitivity (label changes with Ch 6 value) |
 | **Status bar** | Resolved IP, packets per second, error count |
@@ -436,15 +519,17 @@ esp_artnet/
 │   ├── provisioning.c   — SoftAP captive portal, WiFi connect, DNS hijack,
 │   │                       NVS-backed universe + network config (DHCP/static IP)
 │   ├── artnet.c         — UDP receiver, Art-Net parser, runtime universe change
+│   ├── artnet_poll.c    — builds the ArtPollReply, stores the node names
+│   ├── artnet_ip.c      — ArtIpProg / ArtIpProgReply (remote IP configuration)
 │   ├── dmx.c            — UART1 DMX-512 transmitter
-│   ├── ota.c            — automatic GitHub OTA updater (6 h interval)
+│   ├── ota.c            — optional automatic GitHub OTA updater (off by default, 6 h interval)
 │   ├── webserver.c      — status/config web UI, /api/status, /api/config,
 │   │                       /ota/url, /ota/upload
 │   ├── led.c/.h         — WS2812 + GPIO2 status LEDs
 │   ├── web/             — HTML/CSS/JS pages, embedded into the firmware at build time
 │   │   ├── status.html      — status / config web UI (served by webserver.c)
 │   │   └── portal.html      — WiFi setup captive portal (served by provisioning.c,
-│   │                           placeholders {{UNIVERSE}} and {{VERSION}})
+│   │                           placeholders {{NET}}, {{SUB}}, {{UNI}}, {{VERSION}})
 │   ├── debug/           — optional debug/test code, only compiled with -DDMX_DEBUG_*
 │   │   ├── debug.cmake      — maps the -DDMX_DEBUG_* options to sources/defines
 │   │   ├── dmx_debug.c/.h   — single hook interface used by main.c / dmx.c
@@ -453,8 +538,9 @@ esp_artnet/
 │   │   └── dmx_sniff.c      — DMX bus sniffer (DMX_DEBUG_SNIFF)
 │   ├── CMakeLists.txt
 │   └── idf_component.yml  — managed components: espressif/cjson, mdns, led_strip
+├── run_test_client.sh   — starts the Python test GUI in the background
 ├── python_test_client/
-│   ├── artnet.py        — Art-Net UDP sender (stdlib only)
+│   ├── artnet.py        — Art-Net UDP sender, ArtPoll / ArtAddress / ArtIpProg client (stdlib only)
 │   ├── gui.py           — tkinter GUI for Showtec LED Par 64 (42427)
 │   └── requirements.txt
 ├── doc/
