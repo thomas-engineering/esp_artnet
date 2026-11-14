@@ -438,7 +438,7 @@ an ephemeral port, so the node's answer is not lost when another Art-Net program
 shares UDP port 6454) to
 `255.255.255.255` and to the `x.y.z.255` broadcast address of the default
 interface (assuming a /24 subnet) for 3 seconds and lists every device that
-answers, showing name, IP address, **Art-Net Port-Adr.** (as `net:sub-net:universe`,
+answers, showing the **Art-Net short name**, IP address, **Art-Net Port-Adr.** (as `net:sub-net:universe`,
 e.g. `1:2:3`) and type. Select one and press **Use selected** (or double-click) to
 copy its IP address and port-address into the Connection fields.
 

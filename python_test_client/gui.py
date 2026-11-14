@@ -192,7 +192,7 @@ class ScanDialog(tk.Toplevel):
         cols = ("name", "ip", "universe", "type")
         self._tree = ttk.Treeview(self, columns=cols, show="headings",
                                   height=8, selectmode="browse")
-        for col, text, width in (("name", "Name", 170), ("ip", "IP address", 120),
+        for col, text, width in (("name", "Art-Net short name", 170), ("ip", "IP address", 120),
                                  ("universe", "Art-Net Port-Adr.", 110),
                                  ("type", "Type", 90)):
             self._tree.heading(col, text=text)
