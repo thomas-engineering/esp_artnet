@@ -557,7 +557,7 @@ class App(tk.Tk):
         self.resizable(False, False)
 
         # Connection
-        self._v_host     = tk.StringVar(value="dmx-artnet.local")
+        self._v_host     = tk.StringVar(value="dmx-artnet-12a4.local")
         self._v_universe = tk.IntVar(value=0)     # 15-bit port-address (used by the sender)
         self._v_net      = tk.IntVar(value=0)     # 0-127
         self._v_sub      = tk.IntVar(value=0)     # 0-15
@@ -605,31 +605,44 @@ class App(tk.Tk):
         f.grid(row=0, column=0, sticky="ew", **P)
         self._build_connection(f)
 
-        f = ttk.LabelFrame(self, text="Color  (Ch 1–3)")
+        f = ttk.LabelFrame(self, text="Lamp")
         f.grid(row=1, column=0, sticky="ew", **P)
+        self._build_lamp(f)
+
+        f = ttk.LabelFrame(self, text="Color  (Ch 1–3)")
+        f.grid(row=2, column=0, sticky="ew", **P)
         self._build_color(f)
 
         self._frame_6ch = ttk.LabelFrame(self, text="6-Channel Settings")
-        self._frame_6ch.grid(row=2, column=0, sticky="ew", **P)
+        self._frame_6ch.grid(row=3, column=0, sticky="ew", **P)
         self._build_6ch(self._frame_6ch)
 
         self._v_status = tk.StringVar(value="Connecting…")
         ttk.Label(self, textvariable=self._v_status, relief="sunken",
-                  anchor="w").grid(row=3, column=0, sticky="ew",
+                  anchor="w").grid(row=4, column=0, sticky="ew",
                                    padx=8, pady=(0, 6))
 
         self._on_mode_change()  # set initial 6ch visibility
 
     def _build_connection(self, p: ttk.LabelFrame) -> None:
+        """Connection to the node: target, scan, node control, port-address."""
         ttk.Label(p, text="Target:").grid(
             row=0, column=0, sticky="e", padx=(8, 2), pady=4)
-        ttk.Entry(p, textvariable=self._v_host, width=22).grid(
+        ttk.Entry(p, textvariable=self._v_host, width=28).grid(
             row=0, column=1, sticky="w", padx=2)
         ttk.Button(p, text="Scan", width=13,
                    command=self._open_scan).grid(row=0, column=2, padx=4)
+        # Enabled while a node answers ArtPoll on the target address
+        self._btn_node = ttk.Button(p, text="Node control", width=13,
+                                    command=self._open_node_dialog,
+                                    state="disabled")
+        self._btn_node.grid(row=0, column=3, padx=(4, 8))
+
         # Art-Net port-address = net (0-127) : sub-net (0-15) : universe (0-15)
+        ttk.Label(p, text="Port-address:").grid(
+            row=1, column=0, sticky="e", padx=(8, 2), pady=4)
         uf = ttk.Frame(p)
-        uf.grid(row=0, column=3, columnspan=2, sticky="w", padx=(12, 2))
+        uf.grid(row=1, column=1, columnspan=3, sticky="w", padx=2)
         vcmd = (self.register(self._valid_digits), "%P", "%W")
         for col, (text, var, hi) in enumerate((
                 ("Net", self._v_net, 127), ("Sub-net", self._v_sub, 15),
@@ -646,40 +659,36 @@ class App(tk.Tk):
                                    lambda *_: self._port_address_to_parts())
         self._port_address_to_parts()
 
+    def _build_lamp(self, p: ttk.LabelFrame) -> None:
+        """Lamp settings: DMX address, mode, blackout and automatic effects."""
         ttk.Label(p, text="DMX address:").grid(
-            row=1, column=0, sticky="e", padx=(8, 2), pady=4)
+            row=0, column=0, sticky="e", padx=(8, 2), pady=4)
         ttk.Spinbox(p, textvariable=self._v_start_ch, from_=1, to=507,
-                    width=7).grid(row=1, column=1, sticky="w", padx=2)
-        # Enabled while a node answers ArtPoll on the target address
-        self._btn_node = ttk.Button(p, text="Node control", width=13,
-                                    command=self._open_node_dialog,
-                                    state="disabled")
-        self._btn_node.grid(row=1, column=2, padx=4)
+                    width=7).grid(row=0, column=1, sticky="w", padx=2)
         ttk.Label(p, text="Mode:").grid(
-            row=1, column=3, sticky="e", padx=(12, 2))
+            row=0, column=2, sticky="e", padx=(12, 2))
         mf = ttk.Frame(p)
-        mf.grid(row=1, column=4, sticky="w", padx=2)
+        mf.grid(row=0, column=3, sticky="w", padx=2)
         for val, label in (("3", "3 ch"), ("6", "6 ch")):
             ttk.Radiobutton(mf, text=label, variable=self._v_mode,
                             value=val, command=self._on_mode_change).pack(
                 side="left", padx=(0, 8))
 
+        bf = ttk.Frame(p)
+        bf.grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
         self._btn_blackout = ttk.Button(
-            p, text="BLACKOUT", command=self._toggle_blackout, width=12)
-        self._btn_blackout.grid(row=0, column=5, rowspan=2,
-                                padx=(14, 4), pady=4)
-
+            bf, text="BLACKOUT", command=self._toggle_blackout, width=12)
+        self._btn_blackout.pack(side="left", padx=4)
         self._btn_show = ttk.Button(
-            p, text="\u2728 Light show", width=14,
+            bf, text="\u2728 Light show", width=14,
             command=lambda: self._toggle_effect(
                 light_show_rgb, self._btn_show, "\u2728 Light show", _SHOW_HZ))
-        self._btn_show.grid(row=0, column=6, padx=(4, 8), pady=(4, 1))
-
+        self._btn_show.pack(side="left", padx=4)
         self._btn_police = ttk.Button(
-            p, text="Police car", width=14,
+            bf, text="Police car", width=14,
             command=lambda: self._toggle_effect(
                 police_rgb, self._btn_police, "Police car", _POLICE_HZ))
-        self._btn_police.grid(row=1, column=6, padx=(4, 8), pady=(1, 4))
+        self._btn_police.pack(side="left", padx=4)
 
     def _scale_row(self, parent, row: int, label: str,
                    var: tk.IntVar) -> None:

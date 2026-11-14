@@ -341,7 +341,7 @@ def scan_nodes(timeout: float = 2.0, on_found=None,
     return list(found.values())
 
 
-def query_node(host: str, timeout: float = 0.5) -> dict | None:
+def query_node(host: str, timeout: float = 1.5) -> dict | None:
     """Unicast an ArtPoll to `host` and return its ArtPollReply (or None)."""
     try:
         ip = socket.gethostbyname(host)
