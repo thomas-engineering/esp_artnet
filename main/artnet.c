@@ -12,6 +12,7 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "nvs.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -67,6 +68,7 @@ typedef struct __attribute__((packed)) {
 
 #define NVS_NAMESPACE     "artnet"
 #define NVS_KEY_FAILSAFE  "failsafe"
+#define NVS_KEY_REMOTE    "remote_prog"
 
 /* Up to two controllers may send to the universe; their data is merged */
 typedef struct {
@@ -88,6 +90,7 @@ static volatile bool     s_merge_ltp = false;   /* false = HTP */
 static volatile bool     s_cancel_merge = false;
 static volatile uint8_t  s_failsafe = ARTNET_FAILSAFE_HOLD;
 static bool              s_failsafe_applied = false;
+static volatile bool     s_remote_prog = true;  /* ArtAddress / ArtIpProg allowed */
 
 /* Unsolicited ArtPollReply broadcasts: sent once at start and, when a
    controller asked for it via ArtPoll TalkToMe, whenever the node changes. */
@@ -135,6 +138,49 @@ static void send_broadcast_reply(int sock, uint8_t *reply)
     };
     size_t n = artnet_build_poll_reply(reply, s_universe);
     sendto(sock, reply, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+}
+
+/* ArtPoll replies are delayed by a random 0-1 s (Art-Net 4 recommendation),
+   so that many nodes answering one broadcast poll do not collide. */
+#define POLL_DELAY_MAX_MS  1000
+#define POLL_QUEUE_LEN     4
+
+typedef struct {
+    struct sockaddr_in dst;
+    int64_t            due_us;
+    bool               used;
+} poll_pending_t;
+
+static poll_pending_t s_poll_q[POLL_QUEUE_LEN];
+
+static void poll_reply_schedule(int sock, uint8_t *reply, const struct sockaddr_in *src, int64_t now)
+{
+    poll_pending_t *free_slot = NULL;
+    for (int i = 0; i < POLL_QUEUE_LEN; i++) {
+        poll_pending_t *q = &s_poll_q[i];
+        if (q->used && q->dst.sin_addr.s_addr == src->sin_addr.s_addr &&
+            q->dst.sin_port == src->sin_port)
+            return;                             /* this controller is already waiting */
+        if (!q->used && !free_slot) free_slot = q;
+    }
+    if (!free_slot) {                           /* queue full: answer at once */
+        send_reply(sock, reply, artnet_build_poll_reply(reply, s_universe), src);
+        return;
+    }
+    free_slot->dst    = *src;
+    free_slot->due_us = now + (int64_t)(esp_random() % POLL_DELAY_MAX_MS) * 1000;
+    free_slot->used   = true;
+}
+
+static void poll_reply_flush(int sock, uint8_t *reply, int64_t now)
+{
+    for (int i = 0; i < POLL_QUEUE_LEN; i++) {
+        poll_pending_t *q = &s_poll_q[i];
+        if (q->used && now >= q->due_us) {
+            q->used = false;
+            send_reply(sock, reply, artnet_build_poll_reply(reply, s_universe), &q->dst);
+        }
+    }
 }
 
 /* ── ArtDmx ───────────────────────────────────────────────────────────── */
@@ -322,8 +368,9 @@ static void artnet_task(void *arg)
         return;
     }
 
-    /* Wake up regularly: announcements, failsafe and the packet rate need it */
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 500 * 1000 };
+    /* Wake up regularly: announcements, delayed poll replies, failsafe and
+       the packet rate need it */
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 50 * 1000 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     ESP_LOGI(TAG, "Listening for Art-Net on UDP port %d, universe %d",
@@ -347,6 +394,7 @@ static void artnet_task(void *arg)
             s_announce_force   = false;
             send_broadcast_reply(sock, reply);
         }
+        poll_reply_flush(sock, reply, now);
         check_failsafe(now);
         if (now - pps_t >= 1000000) {           /* packets per second, once a second */
             uint32_t cnt = s_pkt_count;
@@ -364,15 +412,14 @@ static void artnet_task(void *arg)
             break;
 
         case ARTNET_OP_POLL:
-            if (handle_art_poll(raw, len)) {
-                size_t n = artnet_build_poll_reply(reply, s_universe);
-                send_reply(sock, reply, n, &src);
-            }
+            if (handle_art_poll(raw, len))
+                poll_reply_schedule(sock, reply, &src, now);
             break;
 
         case ARTNET_OP_ADDRESS:
             if (len >= ARTADDRESS_LEN) {
-                handle_art_address(raw);
+                if (s_remote_prog) handle_art_address(raw);
+                else ESP_LOGW(TAG, "ArtAddress ignored: remote programming is off");
                 size_t n = artnet_build_poll_reply(reply, s_universe);
                 send_reply(sock, reply, n, &src);
             }
@@ -381,7 +428,9 @@ static void artnet_task(void *arg)
         case ARTNET_OP_IPPROG: {
             static uint8_t ip_reply[ARTNET_IPPROG_REPLY_LEN];
             bool restart;
-            size_t n = artnet_ip_prog(raw, len, ip_reply, &restart);
+            if (!s_remote_prog) ESP_LOGW(TAG, "ArtIpProg ignored: remote programming is off");
+            /* len 0 = no command: the reply only reports the current settings */
+            size_t n = artnet_ip_prog(raw, s_remote_prog ? len : 0, ip_reply, &restart);
             send_reply(sock, ip_reply, n, &src);
             if (restart) xTaskCreate(restart_task, "restart", 3072, NULL, 1, NULL);
             break;
@@ -407,6 +456,12 @@ void artnet_start(uint16_t universe)
         nvs_close(h);
     }
     s_failsafe = fs <= ARTNET_FAILSAFE_FULL ? fs : ARTNET_FAILSAFE_HOLD;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t rp = 1;
+        nvs_get_u8(h, NVS_KEY_REMOTE, &rp);
+        nvs_close(h);
+        s_remote_prog = rp != 0;
+    }
 
     artnet_poll_init();
     xTaskCreate(artnet_task, "artnet", 4096, NULL, 5, NULL);
@@ -447,6 +502,21 @@ void artnet_set_failsafe(artnet_failsafe_t mode)
     ESP_LOGI(TAG, "Failsafe mode: %s",
              mode == ARTNET_FAILSAFE_HOLD ? "hold" : mode == ARTNET_FAILSAFE_ZERO ? "zero" : "full");
     artnet_announce();
+}
+
+bool artnet_get_remote_prog(void) { return s_remote_prog; }
+
+void artnet_set_remote_prog(bool allow)
+{
+    if (allow == s_remote_prog) return;
+    s_remote_prog = allow;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, NVS_KEY_REMOTE, allow ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    ESP_LOGI(TAG, "Remote programming %s", allow ? "allowed" : "blocked");
 }
 
 uint8_t artnet_good_output(void)

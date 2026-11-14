@@ -5,6 +5,7 @@
 #include "ota.h"
 #include "provisioning.h"
 #include "http_util.h"
+#include "net_util.h"
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -137,6 +138,12 @@ static esp_err_t handle_status(httpd_req_t *req)
     json_escape(nshort, eshort, sizeof(eshort));
     json_escape(nlong,  elong,  sizeof(elong));
 
+    char e_ip[40], e_nm[40], e_gw[40], e_dns[40];
+    json_escape(netcfg.ip,      e_ip,  sizeof(e_ip));
+    json_escape(netcfg.netmask, e_nm,  sizeof(e_nm));
+    json_escape(netcfg.gateway, e_gw,  sizeof(e_gw));
+    json_escape(netcfg.dns,     e_dns, sizeof(e_dns));
+
     char json[1024];
     snprintf(json, sizeof(json),
              "{\"version\":\"%s\","
@@ -146,6 +153,8 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"artnet_pps\":%u,"
              "\"dmx\":%s,"
              "\"auto_ota\":%s,"
+             "\"hostname\":\"%s\","
+             "\"remote_prog\":%s,"
              "\"failsafe\":\"%s\","
              "\"name_short\":\"%s\","
              "\"name_long\":\"%s\","
@@ -157,10 +166,12 @@ static esp_err_t handle_status(httpd_req_t *req)
              ver, ip_str, rssi,
              (unsigned)artnet_get_universe(), (unsigned)pps, dmx_arr,
              ota_get_auto_enabled() ? "true" : "false",
+             provisioning_get_hostname(),
+             artnet_get_remote_prog() ? "true" : "false",
              s_failsafe_names[artnet_get_failsafe()],
              eshort, elong,
              netcfg.dhcp ? "dhcp" : "static",
-             netcfg.ip, netcfg.netmask, netcfg.gateway, netcfg.dns);
+             e_ip, e_nm, e_gw, e_dns);
 
     send_json(req, json);
     return ESP_OK;
@@ -170,6 +181,7 @@ static esp_err_t handle_status(httpd_req_t *req)
 
 static esp_err_t handle_config(httpd_req_t *req)
 {
+    if (!http_check_csrf(req)) return ESP_OK;
     char body[512];
     if (http_recv_body(req, body, sizeof(body)) < 0) {
         send_json(req, "{\"ok\":false,\"msg\":\"Empty or too long body\"}");
@@ -212,6 +224,11 @@ static esp_err_t handle_config(httpd_req_t *req)
         }
     }
 
+    cJSON *rp_item = cJSON_GetObjectItem(root, "remote_prog");
+    if (cJSON_IsBool(rp_item)) {
+        artnet_set_remote_prog(cJSON_IsTrue(rp_item));
+    }
+
     cJSON *auto_item = cJSON_GetObjectItem(root, "auto_ota");
     if (cJSON_IsBool(auto_item)) {
         ota_set_auto_enabled(cJSON_IsTrue(auto_item));
@@ -230,6 +247,16 @@ static esp_err_t handle_config(httpd_req_t *req)
                 !cJSON_IsString(gw) || !cJSON_IsString(dns)) {
                 cJSON_Delete(root);
                 send_json(req, "{\"ok\":false,\"msg\":\"Missing IP fields\"}");
+                return ESP_OK;
+            }
+            const char *why = NULL;
+            if (!net_static_config_valid(ip->valuestring, nm->valuestring,
+                                         gw->valuestring, dns->valuestring, &why)) {
+                char msg[96], resp[160];
+                json_escape(why, msg, sizeof(msg));
+                snprintf(resp, sizeof(resp), "{\"ok\":false,\"msg\":\"%s\"}", msg);
+                cJSON_Delete(root);
+                send_json(req, resp);
                 return ESP_OK;
             }
             strlcpy(cfg.ip,      ip->valuestring,  sizeof(cfg.ip));
@@ -304,6 +331,7 @@ static void ota_url_task(void *arg)
 
 static esp_err_t handle_ota_url(httpd_req_t *req)
 {
+    if (!http_check_csrf(req)) return ESP_OK;
     char body[512];
     if (http_recv_body(req, body, sizeof(body)) < 0) {
         send_json(req, "{\"ok\":false,\"msg\":\"Empty or too long body\"}");
@@ -347,6 +375,7 @@ static esp_err_t handle_ota_url(httpd_req_t *req)
 
 static esp_err_t handle_ota_upload(httpd_req_t *req)
 {
+    if (!http_check_csrf(req)) return ESP_OK;
     if (req->content_len == 0) {
         send_json(req, "{\"ok\":false,\"msg\":\"No data\"}");
         return ESP_OK;
@@ -464,5 +493,5 @@ void webserver_start(void)
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++)
         httpd_register_uri_handler(server, &routes[i]);
 
-    ESP_LOGI(TAG, "Status page: http://dmx-artnet.local/");
+    ESP_LOGI(TAG, "Status page: http://%s.local/", provisioning_get_hostname());
 }

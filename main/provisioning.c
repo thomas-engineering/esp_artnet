@@ -11,6 +11,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_http_server.h"
@@ -554,6 +555,17 @@ static bool try_sta(const char *ssid, const char *pass)
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
+const char *provisioning_get_hostname(void)
+{
+    static char name[24];
+    if (!name[0]) {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(name, sizeof(name), "dmx-artnet-%02x%02x", mac[4], mac[5]);
+    }
+    return name;
+}
+
 void provisioning_start(void)
 {
     s_eg = xEventGroupCreate();
@@ -562,7 +574,7 @@ void provisioning_start(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_sta_netif = esp_netif_create_default_wifi_sta();
-    esp_netif_set_hostname(s_sta_netif, "dmx-artnet");
+    esp_netif_set_hostname(s_sta_netif, provisioning_get_hostname());
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();

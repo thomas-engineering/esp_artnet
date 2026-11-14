@@ -110,10 +110,10 @@ void app_main(void)
     provisioning_start(); /* blocks until IP obtained */
 
     mdns_init();
-    mdns_hostname_set("dmx-artnet");
+    mdns_hostname_set(provisioning_get_hostname());
     mdns_instance_name_set("Art-Net DMX Node");
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-    ESP_LOGI("main", "mDNS hostname: dmx-artnet.local");
+    ESP_LOGI("main", "mDNS hostname: %s.local", provisioning_get_hostname());
 
     artnet_start(provisioning_get_universe());
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);

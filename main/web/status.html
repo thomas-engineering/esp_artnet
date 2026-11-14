@@ -47,6 +47,7 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <table>
 <tr><td>Firmware</td><td id='ver'>&#8211;</td></tr>
 <tr><td>IP Address</td><td id='ip'>&#8211;</td></tr>
+<tr><td>Hostname</td><td id='hn'>&#8211;</td></tr>
 <tr><td>WiFi RSSI</td><td id='rs'>&#8211;</td></tr>
 <tr><td>Art-Net Net</td><td id='nt'>&#8211;</td></tr>
 <tr><td>Art-Net Sub-net</td><td id='sn'>&#8211;</td></tr>
@@ -69,6 +70,7 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <div class='uvw'><button class='adj' type='button' onclick="ud('uv',-1,15)">&#8722;</button><input type='number' id='uv' min='0' max='15' value='0' onchange="cl('uv',15)"><button class='adj' type='button' onclick="ud('uv',1,15)">+</button><button class='sav' onclick='su()'>Save</button></div>
 <label for='fs'>When Art-Net data stops (after 6 s)</label>
 <select id='fs' onchange='sf2()'><option value='hold'>Hold the last values</option><option value='zero'>All channels off (0)</option><option value='full'>All channels full (255)</option></select>
+<label class='rl'><input type='checkbox' id='rp' onchange='srp()'><span>Allow remote programming (ArtAddress, ArtIpProg)</span></label>
 <hr>
 <h3>Network Configuration</h3>
 <label class='rl'><input type='radio' name='ipmode' id='nd' value='dhcp' checked onchange='nt()'><span>DHCP (automatic)</span></label>
@@ -119,11 +121,11 @@ function ref(){
     [['nms',d.name_short],['nml',d.name_long]].forEach(function(p){
       var e=document.getElementById(p[0]);
       if(!e.dataset.d&&document.activeElement!==e)e.value=p[1]||'';
-    });document.getElementById('ip').textContent=d.ip;document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('un').textContent=(d.universe&15)+' (port-address '+d.universe+')';document.getElementById('nt').textContent=d.universe>>8;document.getElementById('sn').textContent=(d.universe>>4)&15;var p=document.getElementById('pp');p.textContent=d.artnet_pps+' pkt/s';p.style.color=d.artnet_pps>0?'green':'';for(var i=0;i<48&&i<d.dmx.length;i++){
+    });document.getElementById('ip').textContent=d.ip;document.getElementById('hn').textContent=d.hostname+'.local';document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('un').textContent=(d.universe&15)+' (port-address '+d.universe+')';document.getElementById('nt').textContent=d.universe>>8;document.getElementById('sn').textContent=(d.universe>>4)&15;var p=document.getElementById('pp');p.textContent=d.artnet_pps+' pkt/s';p.style.color=d.artnet_pps>0?'green':'';for(var i=0;i<48&&i<d.dmx.length;i++){
       var f=document.getElementById('f'+i);if(f)f.style.height=(d.dmx[i]/2.55).toFixed(0)+'%';
     }
     if(!ini){
-      ini=true;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('fs').value=d.failsafe||'hold';document.getElementById('unet').value=d.universe>>8;document.getElementById('usub').value=(d.universe>>4)&15;document.getElementById('uv').value=d.universe&15;if(d.net_mode==='static'){
+      ini=true;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('rp').checked=d.remote_prog!==false;document.getElementById('fs').value=d.failsafe||'hold';document.getElementById('unet').value=d.universe>>8;document.getElementById('usub').value=(d.universe>>4)&15;document.getElementById('uv').value=d.universe&15;if(d.net_mode==='static'){
         document.getElementById('ns').checked=true;document.getElementById('sf').style.display='';document.getElementById('sa').value=d.s_ip||'';document.getElementById('sk').value=d.s_nm||'';document.getElementById('sg').value=d.s_gw||'';document.getElementById('sd').value=d.s_dns||'';
       }
     }
@@ -152,10 +154,29 @@ function ud(id,d,max){
   e.value=(parseInt(e.value)||0)+d;
   cl(id,max);
 }
+function srp(){
+  var c=document.getElementById('rp');
+  fetch('/api/config',{
+    method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
+      'Content-Type':'application/json'
+    },body:JSON.stringify({
+      remote_prog:c.checked
+    })
+  }).then(function(r){
+    return r.json();
+  }).then(function(d){
+    sm(d.ok?(c.checked?'Remote programming allowed.':'Remote programming blocked.'):'Error: '+(d.msg||''),d.ok);
+  }).catch(function(){
+    c.checked=!c.checked;
+    sm('Request failed.',0);
+  });
+}
 function sa(){
   var c=document.getElementById('ao');
   fetch('/api/config',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/json'
     },body:JSON.stringify({
       auto_ota:c.checked
@@ -174,6 +195,7 @@ function sname(id,key){
   b[key]=e.value;
   fetch('/api/config',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/json'
     },body:JSON.stringify(b)
   }).then(function(r){
@@ -194,6 +216,7 @@ function sf2(){
   var e=document.getElementById('fs');
   fetch('/api/config',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/json'
     },body:JSON.stringify({
       failsafe:e.value
@@ -225,6 +248,7 @@ function su(){
   sm('Saving…','');
   fetch('/api/config',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/json'
     },body:JSON.stringify({
       universe:n*256+s*16+u
@@ -255,6 +279,7 @@ function sn(){
   sm('Saving…','');
   fetch('/api/config',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/json'
     },body:JSON.stringify(o)
   }).then(function(r){
@@ -316,6 +341,7 @@ function fu(){
   startOtaPoll();
   fetch('/ota/url',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/json'
     },body:JSON.stringify({
       url:u
@@ -339,6 +365,7 @@ function up(){
   startOtaPoll();
   fetch('/ota/upload',{
     method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
       'Content-Type':'application/octet-stream'
     },body:f
   }).then(function(r){

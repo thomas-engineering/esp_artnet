@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 #define ARTNET_PORT 6454
 
@@ -27,6 +28,12 @@ uint32_t artnet_idle_ms(void);          /* ms since the last ArtDmx, UINT32_MAX 
 
 artnet_failsafe_t artnet_get_failsafe(void);
 void              artnet_set_failsafe(artnet_failsafe_t mode);   /* stored in NVS */
+
+/* Remote programming over Art-Net (ArtAddress, ArtIpProg). On by default;
+   when off both commands are ignored (ArtIpProg is still answered with the
+   current settings). Stored in NVS. */
+bool artnet_get_remote_prog(void);
+void artnet_set_remote_prog(bool allow);
 
 /* GoodOutput byte for ArtPollReply (data active, merging, LTP) */
 uint8_t  artnet_good_output(void);

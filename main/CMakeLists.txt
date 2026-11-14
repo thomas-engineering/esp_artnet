@@ -10,6 +10,7 @@ idf_component_register(
         "led.c"
         "webserver.c"
         "http_util.c"
+        "net_util.c"
     INCLUDE_DIRS "." "debug"
     EMBED_TXTFILES
         "web/status.html"

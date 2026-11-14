@@ -170,8 +170,10 @@ portal**:
    **net** (0–127), **sub-net** (0–15) and **universe** (0–15), and tap
    **Save & connect**.
 5. The device restarts, connects to your network, and is reachable at
-   **http://dmx-artnet.local** (mDNS) or at the IP shown in your router's
-   DHCP table (hostname: `dmx-artnet`).
+   **http://dmx-artnet-xxxx.local** (mDNS) or at the IP shown in your router's
+   DHCP table. `xxxx` are the last two bytes of the node's WiFi MAC address in
+   hex (for example `dmx-artnet-12a4`), so several nodes can share one
+   network. The hostname is shown in the web UI and in the serial log at boot.
 
 **To re-provision:** hold the BOOT button for 3 s while the node is running.
 All settings are erased and the device returns to SoftAP mode.
@@ -191,7 +193,7 @@ yellow meanwhile and the DMX output keeps running.
 ## Web Interface
 
 Once connected, the node serves a status and configuration page at
-**http://dmx-artnet.local/** (or the device's IP address).
+**http://dmx-artnet-xxxx.local/** (or the device's IP address).
 
 ![Web status page](doc/screenshot_webui.png)
 
@@ -227,6 +229,42 @@ change it.
 Choose between **DHCP (automatic)** and **Static IP**.  Selecting Static IP
 reveals input fields for IPv4 address, netmask, gateway and DNS server.
 Saving network settings restarts the device to apply them.
+
+Static settings are validated before they are saved (web UI and ArtIpProg
+share the same checks). The web UI shows the reason and keeps the old
+settings if any of these fail:
+
+- every field is a plain dotted-quad address (`a.b.c.d`);
+- the netmask is contiguous (`255.255.255.0`, not `255.0.255.0`) and not `/32`;
+- the IP is a usable host address: not `0.x`, `127.x`, multicast or reserved
+  (>= 224), and not the network or broadcast address of its subnet;
+- the gateway is a different host address inside the same subnet;
+- the DNS server is a valid host address.
+
+ArtIpProg checks only the IP address and the mask.
+
+### Access protection (CSRF)
+
+Settings and firmware can be changed without a password, so the POST
+endpoints `/api/config`, `/ota/url` and `/ota/upload` reject requests that a
+foreign web page could trigger from a browser on the same network. A request
+is accepted only if
+
+- it carries the header `X-Requested-With: dmx-node` (browsers do not allow
+  a cross-origin page to send it without a CORS preflight, which the node
+  never answers), and
+- its `Origin` header, if present, has the same host as the `Host` header.
+
+Otherwise the node answers `403 Forbidden` and logs the rejection. The web UI
+sends the header automatically. Scripts must add it, for example:
+
+```bash
+curl -X POST -H 'X-Requested-With: dmx-node' -H 'Content-Type: application/json' \
+     -d '{"failsafe":"hold"}' http://dmx-artnet-xxxx.local/api/config
+```
+
+This is not a login: anyone who can reach the node with a script (not a
+browser) can still use the endpoints. Firmware images are not signed.
 
 ### Firmware Update
 
@@ -342,6 +380,9 @@ configured universe, the merge state and the failsafe mode. It is sent as a
 unicast to the poller's address on **port 6454**, and additionally to the port
 the poll came from if that is a different one. A *targeted* ArtPoll (TalkToMe
 bit 5) is only answered when the node's port-address is inside the given range.
+As the specification recommends, the reply to an ArtPoll is delayed by a random
+0–1 s so that many nodes do not answer one broadcast poll at the same moment;
+clients must wait at least 1 s for it (the test client's Scan listens for 3 s).
 
 **ArtAddress** (`0x6000`) lets a controller reprogram the node remotely; the
 node answers with an ArtPollReply. Supported fields:
@@ -365,6 +406,14 @@ polled with the TalkToMe flag *reply on change* (bit 1), it also broadcasts a
 reply whenever the universe, the names, the LED mode, the merge or failsafe mode
 or the IP address change, whether the change came from ArtAddress or from the
 web UI. The flag of the most recent ArtPoll counts.
+
+**Remote programming switch:** ArtAddress and ArtIpProg are unauthenticated
+(inherent in the protocol). The web UI has the checkbox **Allow remote
+programming (ArtAddress, ArtIpProg)** in the Art-Net settings (default: on,
+stored in NVS). When it is off, ArtAddress is ignored (the node still answers
+with an ArtPollReply) and ArtIpProg only returns the current settings without
+changing anything. Settings made in the web UI are not affected. Note that the
+test client's Node control dialog cannot change anything while the switch is off.
 
 **ArtIpProg** (`0xF800`) configures the node's IP settings remotely; the node
 answers with an **ArtIpProgReply** (`0xF900`) carrying its IP address, subnet
@@ -404,7 +453,8 @@ universe follows an address change so the lamp keeps being controlled.
 
 | Section | Controls |
 |---|---|
-| **Connection** | Target hostname or IP (`dmx-artnet.local`) with **Scan** and **Node control** buttons, Art-Net **net** (0–127), **sub-net** (0–15) and **universe** (0–15), DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** and **Police car** toggles |
+| **Connection** | Target hostname or IP (default `dmx-artnet-12a4.local`, change it to your node's hostname) with **Scan** and **Node control** buttons, Art-Net **net** (0–127), **sub-net** (0–15) and **universe** (0–15) |
+| **Lamp** | DMX start address (1–507), 3 ch / 6 ch mode, **BLACKOUT** toggle, **✨ Light show** and **Police car** toggles |
 | **Color** | Red / Green / Blue sliders (Ch 1–3) + live color preview swatch |
 | **6-Channel Settings** | Ch 4 macro, Ch 6 program with one-click preset buttons, Ch 5 strobe/speed/sensitivity (label changes with Ch 6 value) |
 | **Status bar** | Resolved IP, packets per second, error count |
@@ -575,7 +625,8 @@ esp_artnet/
 │   ├── artnet_ip.c      — ArtIpProg / ArtIpProgReply (remote IP configuration)
 │   ├── dmx.c            — UART1 DMX-512 transmitter
 │   ├── ota.c            — optional automatic GitHub OTA updater (off by default, 6 h interval)
-│   ├── http_util.c      — reads complete HTTP request bodies
+│   ├── http_util.c      — reads complete HTTP request bodies, CSRF check for POST handlers
+│   ├── net_util.c       — IPv4 parsing and static-IP validation (web UI + ArtIpProg)
 │   ├── webserver.c      — status/config web UI, /api/status, /api/config,
 │   │                       /ota/url, /ota/upload
 │   ├── led.c/.h         — WS2812 + GPIO2 status LEDs

@@ -1,6 +1,7 @@
 #include "artnet_ip.h"
 #include "artnet.h"
 #include "provisioning.h"
+#include "net_util.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -34,11 +35,7 @@ static void to_str(const uint8_t a[4], char *dst, size_t n)
 
 static bool from_str(const char *s, uint8_t a[4])
 {
-    if (!s || !s[0]) return false;
-    uint32_t v = inet_addr(s);
-    if (v == IPADDR_NONE) return false;
-    memcpy(a, &v, 4);
-    return true;
+    return net_parse_ipv4(s, a);
 }
 
 /* Address set currently in use by the STA interface */
@@ -52,14 +49,6 @@ static void runtime_addrs(addr_set_t *r)
         memcpy(r->mask, &info.netmask.addr, 4);
         memcpy(r->gw,   &info.gw.addr,      4);
     }
-}
-
-/* A valid mask is a run of 1 bits followed by 0 bits, and not all zero */
-static bool mask_valid(const uint8_t m[4])
-{
-    uint32_t v = ((uint32_t)m[0] << 24) | (m[1] << 16) | (m[2] << 8) | m[3];
-    uint32_t inv = ~v;
-    return v != 0 && (inv & (inv + 1)) == 0;
 }
 
 static bool is_zero4(const uint8_t a[4]) { return !(a[0] | a[1] | a[2] | a[3]); }
@@ -89,7 +78,7 @@ size_t artnet_ip_prog(const uint8_t *p, int len, uint8_t *out, bool *restart)
             if ((cmd & IPPROG_GATEWAY) && len >= OFF_GATEWAY + 4)
                 memcpy(a.gw, p + OFF_GATEWAY, 4);
 
-            if (is_zero4(a.ip) || a.ip[0] >= 224 || !mask_valid(a.mask)) {
+            if (!net_host_ip_valid(a.ip) || !net_mask_valid(a.mask)) {
                 ESP_LOGW(TAG, "ArtIpProg: rejected invalid address/mask");
             } else {
                 cfg.dhcp = false;

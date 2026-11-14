@@ -10,6 +10,10 @@ void provisioning_start(void);
 /* Erase stored WiFi credentials (call before restart to force re-provisioning) */
 void provisioning_clear(void);
 
+/* Unique network hostname "dmx-artnet-xxxx" (xxxx = last two MAC bytes, hex).
+   Used for DHCP and mDNS ("<hostname>.local"). Valid at any time. */
+const char *provisioning_get_hostname(void);
+
 /* Art-Net universe (NVS-backed) */
 uint16_t provisioning_get_universe(void);
 void     provisioning_save_universe(uint16_t univ);
