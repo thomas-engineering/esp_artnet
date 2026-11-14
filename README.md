@@ -621,6 +621,7 @@ esp_artnet/
 │   ├── provisioning.c   — SoftAP captive portal, WiFi connect, DNS hijack,
 │   │                       NVS-backed universe + network config (DHCP/static IP)
 │   ├── artnet.c         — UDP receiver, Art-Net parser, runtime universe change
+│   ├── artnet_core.c    — hardware-independent Art-Net logic (merge, sequence, failsafe), host-tested
 │   ├── artnet_poll.c    — builds the ArtPollReply, stores the node names
 │   ├── artnet_ip.c      — ArtIpProg / ArtIpProgReply (remote IP configuration)
 │   ├── dmx.c            — UART1 DMX-512 transmitter
@@ -658,6 +659,7 @@ esp_artnet/
 │   │                         firmware builds (normal and with all debug options)
 │   └── build-release.yml  — builds firmware with ESP-IDF v6.1 and publishes
 │                             a GitHub release with the binary
+├── test/                — host unit tests for the firmware logic (make -C test)
 ├── partitions.csv
 └── sdkconfig.defaults
 ```
@@ -672,9 +674,22 @@ python3 -m unittest -v
 ```
 
 runs the unit tests of the Art-Net test client (packet builders and parsers; no
-network or hardware needed). The same tests and two firmware builds run on
-GitHub for every push and pull request (`.github/workflows/ci.yml`). There are
-no automated tests for the firmware itself yet.
+network or hardware needed).
+
+```bash
+make -C test
+```
+
+runs the firmware unit tests on the host (needs only `gcc` and `make`, built
+with AddressSanitizer/UBSan). They cover the hardware-independent code that was
+split out of `artnet.c` into `artnet_core.c` (ArtDmx parsing and length
+handling, sequence check, two-source HTP/LTP merge, AcCancelMerge, failsafe
+timing, targeted ArtPoll, ArtAddress port-address) and the IPv4 / static-IP
+validation in `net_util.c`. Code that needs ESP-IDF (sockets, WiFi, NVS, HTTP
+handlers) is not covered; it is tested on the device.
+
+All tests and two firmware builds run on GitHub for every push and pull request
+(`.github/workflows/ci.yml`).
 
 ## Development
 

@@ -1,6 +1,10 @@
 #include "net_util.h"
 #include <string.h>
+#ifdef ESP_PLATFORM
 #include "lwip/sockets.h"
+#else
+#include <arpa/inet.h>   /* host unit tests */
+#endif
 
 bool net_parse_ipv4(const char *s, uint8_t out[4])
 {

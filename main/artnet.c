@@ -1,6 +1,7 @@
 #include "artnet.h"
 #include "artnet_poll.h"
 #include "artnet_ip.h"
+#include "artnet_core.h"
 #include "provisioning.h"
 #include "dmx.h"
 #include "led.h"
@@ -38,6 +39,7 @@ typedef struct __attribute__((packed)) {
 #define ARTNET_OP_ADDRESS 0x6000u /* ArtAddress: remote programming of the node */
 #define ARTNET_OP_IPPROG  0xF800u /* ArtIpProg: remote IP configuration */
 #define ARTDMX_HEADER_LEN 18
+_Static_assert(ARTNET_CORE_CHANNELS == DMX_CHANNELS, "channel count mismatch");
 
 /* ArtAddress command values (Command field, byte 106) */
 #define AC_CANCEL_MERGE 0x01
@@ -57,12 +59,6 @@ typedef struct __attribute__((packed)) {
 #define ARTPOLL_TALK_ON_CHANGE 0x02   /* send ArtPollReply whenever the node changes */
 #define ARTPOLL_TARGETED       0x20   /* only nodes inside the target range answer   */
 
-/* A source that has been silent this long no longer takes part in merging */
-#define MERGE_TIMEOUT_US     (10 * 1000000LL)
-/* After this long without ArtDmx the sequence check starts afresh */
-#define SEQ_RESET_US         (1 * 1000000LL)
-/* No ArtDmx for this long = data loss: apply the failsafe setting */
-#define FAILSAFE_TIMEOUT_US  (6 * 1000000LL)
 /* "Data is being transmitted" in ArtPollReply: ArtDmx seen within this time */
 #define ACTIVE_US            (3 * 1000000LL)
 
@@ -70,24 +66,13 @@ typedef struct __attribute__((packed)) {
 #define NVS_KEY_FAILSAFE  "failsafe"
 #define NVS_KEY_REMOTE    "remote_prog"
 
-/* Up to two controllers may send to the universe; their data is merged */
-typedef struct {
-    uint32_t ip;                    /* network byte order, 0 = slot unused */
-    int64_t  last_us;               /* time of the last accepted packet   */
-    uint8_t  seq;                   /* last sequence number (0 = none)    */
-    uint8_t  data[DMX_CHANNELS];    /* last frame of this source          */
-} dmx_source_t;
-
-static dmx_source_t      s_src[2];
+static artnet_merge_t   s_merge;                 /* sources + merge state (artnet_core) */
 static uint8_t           s_buf[DMX_CHANNELS];   /* merged output, read by the DMX task */
 static SemaphoreHandle_t s_mutex;               /* protects s_buf */
 static volatile uint16_t s_universe;
 static volatile uint32_t s_pkt_count = 0;
 static volatile uint32_t s_pps = 0;
 static volatile int64_t  s_last_dmx_us = 0;     /* 0 = no ArtDmx received yet */
-static volatile bool     s_merging = false;
-static volatile bool     s_merge_ltp = false;   /* false = HTP */
-static volatile bool     s_cancel_merge = false;
 static volatile uint8_t  s_failsafe = ARTNET_FAILSAFE_HOLD;
 static bool              s_failsafe_applied = false;
 static volatile bool     s_remote_prog = true;  /* ArtAddress / ArtIpProg allowed */
@@ -185,74 +170,15 @@ static void poll_reply_flush(int sock, uint8_t *reply, int64_t now)
 
 /* ── ArtDmx ───────────────────────────────────────────────────────────── */
 
-static bool source_active(const dmx_source_t *s, int64_t now)
+static void handle_art_dmx(const uint8_t *p, int len, uint32_t src_ip)
 {
-    return s->ip != 0 && now - s->last_us < MERGE_TIMEOUT_US;
-}
-
-static void handle_art_dmx(const artnet_dmx_t *pkt, int len, uint32_t src_ip)
-{
-    if (len <= ARTDMX_HEADER_LEN) return;
-    if (ntohs(pkt->prot_ver) < ARTNET_PROT_VER) return;
-    if (pkt->universe != s_universe) return;    /* LE field on an LE machine */
-
-    /* Never trust the length field beyond what was actually received */
-    uint16_t data_len = ntohs(pkt->length);
-    if (data_len > len - ARTDMX_HEADER_LEN) data_len = len - ARTDMX_HEADER_LEN;
-    if (data_len > DMX_CHANNELS) data_len = DMX_CHANNELS;
-    if (data_len == 0) return;
-
     int64_t now = esp_timer_get_time();
 
-    /* Find the slot of this source, or take a free / expired one */
-    dmx_source_t *slot = NULL;
-    for (int i = 0; i < 2; i++) {
-        if (s_src[i].ip == src_ip && source_active(&s_src[i], now)) slot = &s_src[i];
-    }
-    if (!slot) {
-        for (int i = 0; i < 2 && !slot; i++) {
-            if (!source_active(&s_src[i], now)) {
-                slot = &s_src[i];
-                memset(slot, 0, sizeof(*slot));
-                slot->ip = src_ip;
-            }
-        }
-    }
-    if (!slot) return;                          /* a third source is ignored */
-    dmx_source_t *other = (slot == &s_src[0]) ? &s_src[1] : &s_src[0];
-
-    /* Sequence check: drop packets that arrive out of order. 0 disables it;
-       after a pause the sender may have restarted, so start afresh. */
-    uint8_t seq = pkt->sequence;
-    if (seq != 0 && slot->seq != 0 && now - slot->last_us < SEQ_RESET_US &&
-        (uint8_t)(seq - slot->seq) >= 0x80) {
-        return;
-    }
-    slot->seq = seq;
-
-    if (s_cancel_merge) {                       /* AcCancelMerge: this source wins */
-        s_cancel_merge = false;
-        other->ip = 0;
-    }
-    bool merging = source_active(other, now);
-    s_merging = merging;
-
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    if (!merging) {
-        memcpy(s_buf, pkt->data, data_len);
-    } else if (s_merge_ltp) {
-        /* LTP: a channel follows whichever source changed it last */
-        for (uint16_t i = 0; i < data_len; i++)
-            if (pkt->data[i] != slot->data[i]) s_buf[i] = pkt->data[i];
-    } else {
-        /* HTP: the highest level of both sources wins */
-        for (uint16_t i = 0; i < data_len; i++)
-            s_buf[i] = pkt->data[i] > other->data[i] ? pkt->data[i] : other->data[i];
-    }
+    bool ok = artnet_core_dmx(&s_merge, p, len, src_ip, now, s_universe, s_buf);
     xSemaphoreGive(s_mutex);
+    if (!ok) return;
 
-    memcpy(slot->data, pkt->data, data_len);
-    slot->last_us      = now;
     s_last_dmx_us      = now;
     s_failsafe_applied = false;
     led_artnet_pulse();
@@ -262,14 +188,13 @@ static void handle_art_dmx(const artnet_dmx_t *pkt, int len, uint32_t src_ip)
 /* Data loss: after FAILSAFE_TIMEOUT_US without ArtDmx apply the failsafe mode */
 static void check_failsafe(int64_t now)
 {
-    if (s_failsafe == ARTNET_FAILSAFE_HOLD || s_failsafe_applied) return;
-    if (s_last_dmx_us == 0 || now - s_last_dmx_us < FAILSAFE_TIMEOUT_US) return;
+    if (!artnet_core_failsafe_due(s_failsafe, s_failsafe_applied, s_last_dmx_us, now)) return;
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     memset(s_buf, s_failsafe == ARTNET_FAILSAFE_FULL ? 255 : 0, DMX_CHANNELS);
     xSemaphoreGive(s_mutex);
     s_failsafe_applied = true;
-    s_merging = false;
+    s_merge.merging = false;
     ESP_LOGW(TAG, "No Art-Net data: failsafe output (all %s)",
              s_failsafe == ARTNET_FAILSAFE_FULL ? "full" : "zero");
 }
@@ -281,14 +206,7 @@ static bool handle_art_poll(const uint8_t *p, int len)
 {
     uint8_t flags = len >= 13 ? p[12] : 0;
     s_talk_on_change = (flags & ARTPOLL_TALK_ON_CHANGE) != 0;
-
-    /* Targeted mode: only answer if our port-address is inside the range */
-    if ((flags & ARTPOLL_TARGETED) && len >= 18) {
-        uint16_t top    = ((uint16_t)p[14] << 8) | p[15];
-        uint16_t bottom = ((uint16_t)p[16] << 8) | p[17];
-        if (s_universe < bottom || s_universe > top) return false;
-    }
-    return true;
+    return artnet_core_poll_matches(p, len, s_universe);
 }
 
 /* ── ArtAddress ───────────────────────────────────────────────────────── */
@@ -302,10 +220,7 @@ static void handle_art_address(const uint8_t *p)
 {
     if (p[13] > 1) return;                      /* BindIndex: only our single port */
 
-    uint16_t u = s_universe;
-    if (p[12]  & 0x80) u = (u & 0x00FF) | ((uint16_t)(p[12]  & 0x7F) << 8);   /* net      */
-    if (p[104] & 0x80) u = (u & 0x7F0F) | ((uint16_t)(p[104] & 0x0F) << 4);   /* sub-net  */
-    if (p[100] & 0x80) u = (u & 0x7FF0) |  (uint16_t)(p[100] & 0x0F);         /* universe */
+    uint16_t u = artnet_core_address_port(p, s_universe);
     if (u != s_universe) {
         provisioning_save_universe(u);
         artnet_set_universe(u);                 /* also schedules an announcement */
@@ -321,21 +236,20 @@ static void handle_art_address(const uint8_t *p)
     }
 
     switch (p[106]) {
-    case AC_CANCEL_MERGE: s_cancel_merge = true; break;
+    case AC_CANCEL_MERGE: s_merge.cancel_merge = true; break;
     case AC_LED_NORMAL: led_set_mode(LED_MODE_NORMAL); artnet_announce(); break;
     case AC_LED_MUTE:   led_set_mode(LED_MODE_MUTE);   artnet_announce(); break;
     case AC_LED_LOCATE: led_set_mode(LED_MODE_LOCATE); artnet_announce(); break;
     case AC_FAIL_HOLD:  artnet_set_failsafe(ARTNET_FAILSAFE_HOLD); break;
     case AC_FAIL_ZERO:  artnet_set_failsafe(ARTNET_FAILSAFE_ZERO); break;
     case AC_FAIL_FULL:  artnet_set_failsafe(ARTNET_FAILSAFE_FULL); break;
-    case AC_MERGE_LTP0: s_merge_ltp = true;  artnet_announce(); break;
-    case AC_MERGE_HTP0: s_merge_ltp = false; artnet_announce(); break;
+    case AC_MERGE_LTP0: s_merge.merge_ltp = true;  artnet_announce(); break;
+    case AC_MERGE_HTP0: s_merge.merge_ltp = false; artnet_announce(); break;
     case AC_CLEAR_OP0:
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         memset(s_buf, 0, DMX_CHANNELS);
         xSemaphoreGive(s_mutex);
-        memset(s_src[0].data, 0, DMX_CHANNELS);
-        memset(s_src[1].data, 0, DMX_CHANNELS);
+        artnet_core_clear(&s_merge);
         ESP_LOGI(TAG, "ArtAddress: output cleared");
         break;
     default: break;
@@ -408,7 +322,7 @@ static void artnet_task(void *arg)
 
         switch (pkt.opcode) {
         case ARTNET_OP_DMX:
-            handle_art_dmx(&pkt, len, src.sin_addr.s_addr);
+            handle_art_dmx(raw, len, src.sin_addr.s_addr);
             break;
 
         case ARTNET_OP_POLL:
@@ -523,8 +437,8 @@ uint8_t artnet_good_output(void)
 {
     uint8_t v = 0;
     if (artnet_idle_ms() < ACTIVE_US / 1000) v |= 0x80;    /* data is being transmitted */
-    if (s_merging && (v & 0x80))             v |= 0x08;    /* merging two sources       */
-    if (s_merge_ltp)                         v |= 0x02;    /* merge mode is LTP         */
+    if (s_merge.merging && (v & 0x80))             v |= 0x08;    /* merging two sources       */
+    if (s_merge.merge_ltp)                   v |= 0x02;    /* merge mode is LTP         */
     return v;
 }
 

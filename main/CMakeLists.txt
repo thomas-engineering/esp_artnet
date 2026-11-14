@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "artnet.c"
+        "artnet_core.c"
         "artnet_poll.c"
         "artnet_ip.c"
         "dmx.c"
