@@ -114,9 +114,8 @@ idf.py -p /dev/ttyACM0 flash
 > fails with `No serial data received`.
 
 > **Note:** `idf.py monitor` hangs on this USB-JTAG device because the kernel
-> rejects DTR/RTS modem-control ioctls with EPROTO.  Use a custom
-> `reset_capture.py` script (see the session scratchpad) or any plain serial
-> terminal at 115200 baud to read boot output.
+> rejects DTR/RTS modem-control ioctls with EPROTO.  Use a plain serial reader
+> instead, see [Troubleshooting and bench testing](#troubleshooting-and-bench-testing).
 
 ### Debug builds
 
@@ -769,6 +768,76 @@ handlers) is not covered; it is tested on the device.
 
 All tests and two firmware builds run on GitHub for every push and pull request
 (`.github/workflows/ci.yml`).
+
+## Troubleshooting and bench testing
+
+**Reading the boot log.** `idf.py monitor` does not work with this board (see
+[Flash](#flash)). A few lines of Python with `pyserial` (installed with ESP-IDF)
+do. Open the port with DTR and RTS off, otherwise the open itself can reset the
+board:
+
+```python
+import serial
+s = serial.Serial()
+s.port, s.baudrate, s.timeout = "/dev/ttyACM0", 115200, 1
+s.dtr = s.rts = False
+s.open()
+while True:
+    line = s.readline().decode(errors="replace").rstrip()
+    if line:
+        print(line)
+```
+
+**Resetting the board without flashing.** A reset through `esptool` can leave the
+chip waiting in download mode (the log shows `waiting for download`). This one
+restarts the firmware normally:
+
+```bash
+python -m esptool --chip esp32s3 -p /dev/ttyACM0 --after watchdog-reset read-mac
+```
+
+The USB port can change after a reset (`/dev/ttyACM0` ↔ `/dev/ttyACM1`); check
+with `ls -l /dev/ttyACM*`.
+
+**The node answers ping but the web page does not load** (the connection is
+accepted and reset at once). Older firmware could run out of HTTP sockets when
+idle connections (browser tabs, stuck clients) used them all; from 0.0.5 the
+least recently used connection is closed instead. If it still happens, reboot
+the node and check which clients keep connections open.
+
+**The node cannot be reached at all after changing router or network.** Check the
+computer first: its address may come from a stale DHCP lease of another network
+(for example `192.168.0.x` while the node is in `192.168.178.x`). Renew the lease,
+for example with NetworkManager:
+
+```bash
+nmcli connection down "<profile>" && nmcli connection up "<profile>"
+```
+
+**The lamp shows the same value on channels 1–8, whatever is sent.** A debug
+build left its flags in the build directory; see the note in
+[Debug builds](#debug-builds).
+
+**Testing sACN merging with two sources.** Start two GUI instances
+(`./run_test_client.sh --new`), set both to *sACN (E1.31)* and the node's IP,
+and give them different colours. The node merges them HTP (highest value per
+channel) and its web page shows two sources. Closing one GUI sends
+Stream_Terminated and removes that source immediately; a source that is killed
+without it times out after 2.5 s.
+
+**Testing the multicast re-join after a WiFi reconnect.** The node has no command
+to drop its WiFi link. For a test, flash a build with a temporary task that
+calls `esp_wifi_disconnect()` every 60 s (never commit it), stream multicast sACN
+with a value that changes several times a second, and watch the serial log: it
+shows `WiFi connection lost`, then `Joined multicast group …`, and the data
+should be fresh again about 2 s after the drop.
+
+**Updating the screenshots.** The web page can be captured with headless Chrome
+(`google-chrome --headless=new --window-size=540,2600 --screenshot=… <node-url>`,
+run with `LANGUAGE=en_US` for English widget texts) while a sender streams data,
+so that the channel bars are not empty. Screenshots of the tkinter GUI do not
+work with the usual tools on Wayland; capture the window's own X drawable with
+`XGetImage` (through XWayland) instead.
 
 ## Development
 
