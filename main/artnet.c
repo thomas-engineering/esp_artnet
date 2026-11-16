@@ -2,6 +2,7 @@
 #include "artnet_poll.h"
 #include "artnet_ip.h"
 #include "artnet_core.h"
+#include "sacn.h"
 #include "provisioning.h"
 #include "dmx.h"
 #include "led.h"
@@ -322,7 +323,7 @@ static void artnet_task(void *arg)
 
         switch (pkt.opcode) {
         case ARTNET_OP_DMX:
-            handle_art_dmx(raw, len, src.sin_addr.s_addr);
+            if (!sacn_active()) handle_art_dmx(raw, len, src.sin_addr.s_addr);
             break;
 
         case ARTNET_OP_POLL:
@@ -441,6 +442,27 @@ uint8_t artnet_good_output(void)
     if (s_merge.merge_ltp)                   v |= 0x02;    /* merge mode is LTP         */
     return v;
 }
+
+/* Shared output buffer for the other input protocol (sACN) */
+uint8_t *artnet_output_lock(void)
+{
+    if (!s_mutex) s_mutex = xSemaphoreCreateMutex();
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    return s_buf;
+}
+
+void artnet_output_unlock(bool updated, bool merging)
+{
+    xSemaphoreGive(s_mutex);
+    if (!updated) return;
+    s_merge.merging    = merging;
+    s_last_dmx_us      = esp_timer_get_time();
+    s_failsafe_applied = false;
+    led_artnet_pulse();
+    s_pkt_count++;
+}
+
+bool artnet_merge_ltp(void) { return s_merge.merge_ltp; }
 
 void artnet_copy_dmx(uint8_t *dst, uint16_t max_len)
 {

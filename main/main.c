@@ -10,6 +10,7 @@
 #include "mdns.h"
 #include "driver/gpio.h"
 #include "artnet.h"
+#include "sacn.h"
 #include "dmx.h"
 #include "debug/dmx_debug.h"
 #include "provisioning.h"
@@ -116,6 +117,7 @@ void app_main(void)
     ESP_LOGI("main", "mDNS hostname: %s.local", provisioning_get_hostname());
 
     artnet_start(provisioning_get_universe());
+    sacn_start();
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
     webserver_start();
     ota_start();

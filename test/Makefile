@@ -3,7 +3,7 @@
 CC     ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -g -O0 -fsanitize=address,undefined -I../main
 
-SRCS = test_main.c test_core.c test_net_util.c ../main/artnet_core.c ../main/net_util.c
+SRCS = test_main.c test_core.c test_net_util.c test_sacn.c ../main/artnet_core.c ../main/sacn_core.c ../main/net_util.c
 
 all: run
 

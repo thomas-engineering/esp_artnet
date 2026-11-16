@@ -17,3 +17,4 @@ extern int g_checks, g_failed;
 
 void test_core(void);
 void test_net_util(void);
+void test_sacn(void);

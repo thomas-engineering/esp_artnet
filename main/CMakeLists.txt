@@ -3,6 +3,8 @@ idf_component_register(
         "main.c"
         "artnet.c"
         "artnet_core.c"
+        "sacn.c"
+        "sacn_core.c"
         "artnet_poll.c"
         "artnet_ip.c"
         "dmx.c"

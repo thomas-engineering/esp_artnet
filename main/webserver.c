@@ -2,6 +2,8 @@
 #include "artnet.h"
 #include "artnet_poll.h"
 #include "dmx.h"
+#include "sacn.h"
+#include "sacn_core.h"
 #include "ota.h"
 #include "provisioning.h"
 #include "http_util.h"
@@ -144,13 +146,16 @@ static esp_err_t handle_status(httpd_req_t *req)
     json_escape(netcfg.gateway, e_gw,  sizeof(e_gw));
     json_escape(netcfg.dns,     e_dns, sizeof(e_dns));
 
-    char json[1024];
+    char json[1280];
     snprintf(json, sizeof(json),
              "{\"version\":\"%s\","
              "\"ip\":\"%s\","
              "\"rssi\":%d,"
              "\"universe\":%u,"
              "\"artnet_pps\":%u,"
+             "\"input\":\"%s\","
+             "\"sacn_universe\":%u,"
+             "\"sacn_sources\":%d,"
              "\"dmx\":%s,"
              "\"auto_ota\":%s,"
              "\"hostname\":\"%s\","
@@ -164,7 +169,9 @@ static esp_err_t handle_status(httpd_req_t *req)
              "\"s_gw\":\"%s\","
              "\"s_dns\":\"%s\"}",
              ver, ip_str, rssi,
-             (unsigned)artnet_get_universe(), (unsigned)pps, dmx_arr,
+             (unsigned)artnet_get_universe(), (unsigned)pps,
+             sacn_active() ? "sacn" : "artnet",
+             (unsigned)sacn_get_universe(), sacn_get_sources(), dmx_arr,
              ota_get_auto_enabled() ? "true" : "false",
              provisioning_get_hostname(),
              artnet_get_remote_prog() ? "true" : "false",
@@ -222,6 +229,28 @@ static esp_err_t handle_config(httpd_req_t *req)
             artnet_announce();
             ESP_LOGI(TAG, "Art-Net names updated");
         }
+    }
+
+    /* Input protocol (only one at a time) and sACN universe (0 = automatic) */
+    cJSON *in_item = cJSON_GetObjectItem(root, "input");
+    if (cJSON_IsString(in_item)) {
+        if (strcmp(in_item->valuestring, "sacn") == 0)        sacn_set_mode(INPUT_SACN);
+        else if (strcmp(in_item->valuestring, "artnet") == 0) sacn_set_mode(INPUT_ARTNET);
+        else {
+            cJSON_Delete(root);
+            send_json(req, "{\"ok\":false,\"msg\":\"Unknown input protocol\"}");
+            return ESP_OK;
+        }
+    }
+    cJSON *su_item = cJSON_GetObjectItem(root, "sacn_universe");
+    if (cJSON_IsNumber(su_item)) {
+        double v = su_item->valuedouble;
+        if (v != 0 && (v < 1 || v > SACN_UNIVERSE_MAX || v != (int)v)) {
+            cJSON_Delete(root);
+            send_json(req, "{\"ok\":false,\"msg\":\"sACN universe must be 1-63999\"}");
+            return ESP_OK;
+        }
+        sacn_set_universe((uint16_t)v);
     }
 
     cJSON *rp_item = cJSON_GetObjectItem(root, "remote_prog");

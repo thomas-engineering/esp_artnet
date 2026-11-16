@@ -37,3 +37,11 @@ void artnet_set_remote_prog(bool allow);
 
 /* GoodOutput byte for ArtPollReply (data active, merging, LTP) */
 uint8_t  artnet_good_output(void);
+
+/* Output buffer access for other input protocols (sACN). artnet_output_lock()
+   takes the buffer mutex and returns the buffer (DMX_CHANNELS bytes); call
+   artnet_output_unlock() afterwards. `updated` = the buffer was changed: it
+   restarts the failsafe timer and counts as a received packet. */
+uint8_t *artnet_output_lock(void);
+void     artnet_output_unlock(bool updated, bool merging);
+bool     artnet_merge_ltp(void);        /* merge mode selected with ArtAddress */

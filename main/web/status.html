@@ -52,7 +52,7 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <tr><td>Art-Net Net</td><td id='nt'>&#8211;</td></tr>
 <tr><td>Art-Net Sub-net</td><td id='sn'>&#8211;</td></tr>
 <tr><td>Art-Net Universe</td><td id='un'>&#8211;</td></tr>
-<tr><td>Art-Net</td><td id='pp'>&#8211;</td></tr>
+<tr><td id='ppl'>Art-Net</td><td id='pp'>&#8211;</td></tr>
 <tr><td>Art-Net short name<br>(max 17)</td><td><div class='ne'><input type='text' id='nms' maxlength='17' oninput="this.dataset.d=1"><button onclick="sname('nms','name_short')">Save</button></div></td></tr>
 <tr><td>Art-Net long name<br>(max 63)</td><td><div class='ne'><input type='text' id='nml' maxlength='63' oninput="this.dataset.d=1"><button onclick="sname('nml','name_long')">Save</button></div></td></tr>
 </table>
@@ -61,6 +61,13 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <button class='s' type='button' onclick='cs(16)'>&#9654;</button><button class='s' type='button' onclick='cj(464)'>&#9197;</button></div>
 <div id='dg'></div>
 <hr>
+<h3>Input Protocol</h3>
+<label for='inp'>DMX data source (one at a time)</label>
+<select id='inp' onchange='sip()'><option value='artnet'>Art-Net</option><option value='sacn'>sACN (E1.31)</option></select>
+<label for='su'>sACN universe (1&#8211;63999, default: Art-Net port-address + 1)</label>
+<div class='ne'><input type='number' id='su' min='1' max='63999' value='1'><button onclick='ssu()'>Save</button></div>
+<p style='font-size:.85em;color:#666'>sACN is received as unicast and multicast on UDP port 5568. On WiFi, multicast is often unreliable: if it flickers, send unicast to this node's IP address.</p>
+<hr>
 <h3>Art-Net Settings</h3>
 <label for='unet'>Net (0&#8211;127)</label>
 <div class='uvw'><button class='adj' type='button' onclick="ud('unet',-1,127)">&#8722;</button><input type='number' id='unet' min='0' max='127' value='0' onchange="cl('unet',127)"><button class='adj' type='button' onclick="ud('unet',1,127)">+</button><button class='sav' onclick='su()'>Save</button></div>
@@ -68,7 +75,7 @@ div.uvw .sav{min-width:88px;margin:0;flex-shrink:0}
 <div class='uvw'><button class='adj' type='button' onclick="ud('usub',-1,15)">&#8722;</button><input type='number' id='usub' min='0' max='15' value='0' onchange="cl('usub',15)"><button class='adj' type='button' onclick="ud('usub',1,15)">+</button><button class='sav' onclick='su()'>Save</button></div>
 <label for='uv'>Universe (0&#8211;15)</label>
 <div class='uvw'><button class='adj' type='button' onclick="ud('uv',-1,15)">&#8722;</button><input type='number' id='uv' min='0' max='15' value='0' onchange="cl('uv',15)"><button class='adj' type='button' onclick="ud('uv',1,15)">+</button><button class='sav' onclick='su()'>Save</button></div>
-<label for='fs'>When Art-Net data stops (after 6 s)</label>
+<label for='fs'>When input data stops (after 6 s)</label>
 <select id='fs' onchange='sf2()'><option value='hold'>Hold the last values</option><option value='zero'>All channels off (0)</option><option value='full'>All channels full (255)</option></select>
 <label class='rl'><input type='checkbox' id='rp' onchange='srp()'><span>Allow remote programming (ArtAddress, ArtIpProg)</span></label>
 <hr>
@@ -121,11 +128,11 @@ function ref(){
     [['nms',d.name_short],['nml',d.name_long]].forEach(function(p){
       var e=document.getElementById(p[0]);
       if(!e.dataset.d&&document.activeElement!==e)e.value=p[1]||'';
-    });document.getElementById('ip').textContent=d.ip;document.getElementById('hn').textContent=d.hostname+'.local';document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('un').textContent=(d.universe&15)+' (port-address '+d.universe+')';document.getElementById('nt').textContent=d.universe>>8;document.getElementById('sn').textContent=(d.universe>>4)&15;var p=document.getElementById('pp');p.textContent=d.artnet_pps+' pkt/s';p.style.color=d.artnet_pps>0?'green':'';for(var i=0;i<48&&i<d.dmx.length;i++){
+    });document.getElementById('ip').textContent=d.ip;document.getElementById('hn').textContent=d.hostname+'.local';document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('un').textContent=(d.universe&15)+' (port-address '+d.universe+')';document.getElementById('nt').textContent=d.universe>>8;document.getElementById('sn').textContent=(d.universe>>4)&15;var p=document.getElementById('pp');var sc=d.input==='sacn';document.getElementById('ppl').textContent=sc?'sACN':'Art-Net';p.textContent=d.artnet_pps+' pkt/s'+(sc?' \u00b7 '+d.sacn_sources+' source(s)':'');p.style.color=d.artnet_pps>0?'green':'';for(var i=0;i<48&&i<d.dmx.length;i++){
       var f=document.getElementById('f'+i);if(f)f.style.height=(d.dmx[i]/2.55).toFixed(0)+'%';
     }
     if(!ini){
-      ini=true;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('rp').checked=d.remote_prog!==false;document.getElementById('fs').value=d.failsafe||'hold';document.getElementById('unet').value=d.universe>>8;document.getElementById('usub').value=(d.universe>>4)&15;document.getElementById('uv').value=d.universe&15;if(d.net_mode==='static'){
+      ini=true;document.getElementById('inp').value=d.input||'artnet';document.getElementById('su').value=d.sacn_universe;document.getElementById('ao').checked=!!d.auto_ota;document.getElementById('rp').checked=d.remote_prog!==false;document.getElementById('fs').value=d.failsafe||'hold';document.getElementById('unet').value=d.universe>>8;document.getElementById('usub').value=(d.universe>>4)&15;document.getElementById('uv').value=d.universe&15;if(d.net_mode==='static'){
         document.getElementById('ns').checked=true;document.getElementById('sf').style.display='';document.getElementById('sa').value=d.s_ip||'';document.getElementById('sk').value=d.s_nm||'';document.getElementById('sg').value=d.s_gw||'';document.getElementById('sd').value=d.s_dns||'';
       }
     }
@@ -153,6 +160,32 @@ function ud(id,d,max){
   var e=document.getElementById(id);
   e.value=(parseInt(e.value)||0)+d;
   cl(id,max);
+}
+function pc(o,ok){
+  fetch('/api/config',{
+    method:'POST',headers:{
+      'X-Requested-With':'dmx-node',
+      'Content-Type':'application/json'
+    },body:JSON.stringify(o)
+  }).then(function(r){
+    return r.json();
+  }).then(function(d){
+    sm(d.ok?ok:'Error: '+(d.msg||''),d.ok);ref();
+  }).catch(function(){
+    sm('Request failed.',0);
+  });
+}
+function sip(){
+  var v=document.getElementById('inp').value;
+  pc({input:v},v==='sacn'?'Input: sACN (E1.31).':'Input: Art-Net.');
+}
+function ssu(){
+  var u=parseInt(document.getElementById('su').value);
+  if(isNaN(u)||u<1||u>63999){
+    sm('Invalid sACN universe (1\u201363999).',0);
+    return;
+  }
+  pc({sacn_universe:u},'sACN universe saved.');
 }
 function srp(){
   var c=document.getElementById('rp');
