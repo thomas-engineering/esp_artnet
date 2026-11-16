@@ -76,7 +76,7 @@ static void dmx_output_task(void *arg)
         dmx_debug_override_frame(buf, DMX_CHANNELS); /* no-op in production builds */
         dmx_send(buf, DMX_CHANNELS);
         /* No extra pause: dmx_send() waits for the previous frame, giving ~43 Hz
-         * back-to-back frames like the Arduino reference master. */
+         * back-to-back frames (the fastest rate the 513-slot frame allows). */
         if (!dmx_debug_frame_pause()) vTaskDelay(1);
     }
 }

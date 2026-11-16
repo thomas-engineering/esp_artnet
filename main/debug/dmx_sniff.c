@@ -15,7 +15,7 @@
 #include "esp_log.h"
 #include "dmx.h"
 
-#define SNIFF_UART      UART_NUM_1
+#define SNIFF_UART      DMX_UART_NUM
 #define BREAK_MIN_US    60      /* a low period at least this long is a BREAK */
 
 static const char *TAG = "dmx_sniff";

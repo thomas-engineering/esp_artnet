@@ -8,15 +8,9 @@
 #include "soc/gpio_sig_map.h"
 #include "esp_log.h"
 
-#define DMX_UART_NUM    UART_NUM_1   /* UART0 stays the console */
-#define DMX_BAUD        250000
+/* UART driver buffers (pins, port, baud rate and timing are in dmx.h) */
 #define DMX_TX_BUF      1024
 #define DMX_RX_BUF      256
-
-/* Same timing as the working Arduino (Conceptinetics) master: a 0x00 byte at
- * 49950 baud 8N2 = 180 us BREAK + 40 us MARK AFTER BREAK. */
-#define DMX_BREAK_US    180
-#define DMX_MAB_US      40
 
 static const char *TAG = "dmx";
 
@@ -48,8 +42,8 @@ void dmx_init(void)
        a pull-up the RX input floats and picks up noise. */
     gpio_set_pull_mode(DMX_RX_GPIO, GPIO_PULLUP_ONLY);
 
-    ESP_LOGI(TAG, "DMX init: UART1 TX=GPIO%d RX=GPIO%d DE=GPIO%d @ %d baud",
-             DMX_TX_GPIO, DMX_RX_GPIO, DMX_DE_GPIO, DMX_BAUD);
+    ESP_LOGI(TAG, "DMX init: UART%d TX=GPIO%d RX=GPIO%d DE=GPIO%d @ %d baud",
+             (int)DMX_UART_NUM, DMX_TX_GPIO, DMX_RX_GPIO, DMX_DE_GPIO, DMX_BAUD);
 
     dmx_debug_init(DMX_TX_GPIO); /* no-op unless a -DDMX_DEBUG_* option is set */
 }
@@ -66,8 +60,7 @@ void dmx_send(const uint8_t *data, uint16_t length)
 
     /*
      * Generate BREAK by inverting the idle TX line (180 us low), then MAB
-     * (Mark After Break, 40 us high) - the same timing as the Arduino
-     * Conceptinetics master. The pin routing is not touched: re-calling
+     * (Mark After Break, 40 us high), see dmx.h. The pin routing is not touched: re-calling
      * uart_set_pin() per frame fails with "GPIO not usable".
      *
      * The start code is written straight into the TX FIFO right after the

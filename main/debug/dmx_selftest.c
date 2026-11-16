@@ -15,7 +15,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 
-#define RB_DATA_UART    UART_NUM_2   /* 250 kbaud 8N2: decodes the frame (UART0 = console, UART1 = DMX) */
+#define RB_DATA_UART    UART_NUM_2   /* 250 kbaud 8N2: decodes the frame (UART0 = console, DMX_UART_NUM = DMX) */
 #define RB_DATA_BAUD    250000
 #define DMX_MAX_SLOTS   512
 #define RB_BUF          (DMX_MAX_SLOTS + 8)
