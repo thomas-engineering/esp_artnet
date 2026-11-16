@@ -1,7 +1,7 @@
 """
 Art-Net test client for Showtec LED Par 64 Short Pro RGB (order 42427).
 
-Sends Art-Net ArtDMX frames to the ESP32 Art-Net→DMX node.
+Sends Art-Net ArtDMX or E1.31 (sACN) frames to the ESP32 Art-Net/sACN→DMX node.
 
 Usage:
     python gui.py
@@ -20,6 +20,7 @@ import time
 import queue
 import artnet
 from artnet import ArtNetSender, NodeLink, query_node, scan_nodes
+from sacn import SacnSender, multicast_address
 
 # ── Lamp channel descriptors (from 42427 manual) ─────────────────────────────
 
@@ -563,6 +564,10 @@ class App(tk.Tk):
         self._v_sub      = tk.IntVar(value=0)     # 0-15
         self._v_uni      = tk.IntVar(value=0)     # 0-15
         self._pa_syncing = False
+        # Input protocol of the test: "artnet" or "sacn" (E1.31, universe 1-63999)
+        self._v_proto     = tk.StringVar(value="artnet")
+        self._v_sacn_univ = tk.IntVar(value=1)
+        self._v_multicast = tk.BooleanVar(value=False)
         self._v_start_ch = tk.IntVar(value=1)
         self._v_mode     = tk.StringVar(value="6")
 
@@ -573,10 +578,14 @@ class App(tk.Tk):
         # touched from the main thread, so they are mirrored here on change.
         self._tx_host     = self._v_host.get()
         self._tx_universe = 0
+        self._tx_proto    = "artnet"
+        self._tx_sacn_universe = 1
+        self._tx_multicast = False
         self._tx_frame    = bytes(512)
 
         # Sender state
-        self._sender: ArtNetSender | None = None
+        self._sender: ArtNetSender | SacnSender | None = None
+        self._sender_key: tuple | None = None   # (host, protocol, multicast)
         self._blackout   = False
         self._running    = True
         self._pkt_ok     = 0
@@ -658,6 +667,30 @@ class App(tk.Tk):
         self._v_universe.trace_add("write",
                                    lambda *_: self._port_address_to_parts())
         self._port_address_to_parts()
+
+        # Protocol: Art-Net (above) or E1.31 / sACN (universe 1-63999)
+        ttk.Label(p, text="Protocol:").grid(
+            row=2, column=0, sticky="e", padx=(8, 2), pady=4)
+        pf = ttk.Frame(p)
+        pf.grid(row=2, column=1, columnspan=3, sticky="w", padx=2)
+        ttk.Radiobutton(pf, text="Art-Net", value="artnet",
+                        variable=self._v_proto).grid(row=0, column=0)
+        ttk.Radiobutton(pf, text="sACN (E1.31)", value="sacn",
+                        variable=self._v_proto).grid(row=0, column=1, padx=(8, 12))
+        ttk.Label(pf, text="sACN universe").grid(row=0, column=2, padx=(0, 2))
+        self._sb_sacn = ttk.Spinbox(pf, textvariable=self._v_sacn_univ, from_=1,
+                                    to=63999, width=6, validate="key",
+                                    validatecommand=vcmd)
+        self._sb_sacn.grid(row=0, column=3)
+        self._sb_sacn._max = 63999
+        self._cb_mcast = ttk.Checkbutton(pf, text="Multicast",
+                                         variable=self._v_multicast)
+        self._cb_mcast.grid(row=0, column=4, padx=(8, 0))
+        self._v_proto.trace_add("write", lambda *_: self._on_proto_change())
+        # Art-Net counts universes from 0, sACN from 1: follow the port-address
+        self._v_universe.trace_add("write", lambda *_: self._follow_sacn_universe())
+        self._follow_sacn_universe()
+        self._on_proto_change()
 
     def _build_lamp(self, p: ttk.LabelFrame) -> None:
         """Lamp settings: DMX address, mode, blackout and automatic effects."""
@@ -763,7 +796,8 @@ class App(tk.Tk):
 
         # Keep the sender threads' copy of the state up to date
         for v in (self._v_host, self._v_universe, self._v_start_ch,
-                  self._v_mode, *self._ch):
+                  self._v_mode, self._v_proto, self._v_sacn_univ,
+                  self._v_multicast, *self._ch):
             v.trace_add("write", lambda *_: self._refresh_tx())
 
         # Populate all labels with initial values
@@ -822,6 +856,19 @@ class App(tk.Tk):
         self._v_sub.set((pa >> 4) & 15)
         self._v_uni.set(pa & 15)
         self._pa_syncing = False
+
+    def _follow_sacn_universe(self) -> None:
+        """Default sACN universe = Art-Net port-address + 1 (as on the node)."""
+        try:
+            self._v_sacn_univ.set(min(max(self._v_universe.get(), 0), 32767) + 1)
+        except tk.TclError:
+            pass
+
+    def _on_proto_change(self) -> None:
+        sacn_on = self._v_proto.get() == "sacn"
+        self._sb_sacn.configure(state="normal" if sacn_on else "disabled")
+        self._cb_mcast.configure(state="normal" if sacn_on else "disabled")
+        self._refresh_tx()
 
     def _open_scan(self) -> None:
         ScanDialog(self, self._apply_scan_result)
@@ -909,6 +956,9 @@ class App(tk.Tk):
         try:
             self._tx_host     = self._v_host.get()
             self._tx_universe = self._v_universe.get()
+            self._tx_proto    = self._v_proto.get()
+            self._tx_sacn_universe = min(max(self._v_sacn_univ.get(), 1), 63999)
+            self._tx_multicast = self._v_multicast.get()
             self._tx_frame    = self._build_frame()
         except tk.TclError:
             pass                        # a field is empty while being edited
@@ -916,9 +966,22 @@ class App(tk.Tk):
     # ── Sender thread ─────────────────────────────────────────────────────────
 
     def _start_sender(self) -> None:
-        self._sender = ArtNetSender(self._v_host.get())
+        self._sender, self._sender_key = self._make_sender()
         threading.Thread(target=self._send_loop, daemon=True).start()
         threading.Thread(target=self._node_poll_loop, daemon=True).start()
+
+    def _make_sender(self):
+        key = (self._tx_host, self._tx_proto, self._tx_multicast)
+        if self._tx_proto == "sacn":
+            return SacnSender(key[0], multicast=key[2]), key
+        return ArtNetSender(key[0]), key
+
+    def _close_sender(self) -> None:
+        """Closes the sender; an sACN stream is announced as terminated."""
+        if isinstance(self._sender, SacnSender):
+            self._sender.terminate(self._tx_sacn_universe)
+        if self._sender:
+            self._sender.close()
 
     def _node_poll_loop(self) -> None:
         """Polls the target every 2 s; a reply means an Art-Net node is connected."""
@@ -934,12 +997,13 @@ class App(tk.Tk):
         while self._running:
             t0 = time.monotonic()
 
-            host = self._tx_host
-            if self._sender.host != host:
-                self._sender.close()
-                self._sender = ArtNetSender(host)
+            if self._sender_key != (self._tx_host, self._tx_proto, self._tx_multicast):
+                self._close_sender()
+                self._sender, self._sender_key = self._make_sender()
 
-            ok = self._sender.send(self._tx_universe, self._tx_frame)
+            universe = (self._tx_sacn_universe if self._tx_proto == "sacn"
+                        else self._tx_universe)
+            ok = self._sender.send(universe, self._tx_frame)
             if ok:
                 self._pkt_ok += 1
             else:
@@ -954,7 +1018,17 @@ class App(tk.Tk):
         fail = self._pkt_fail; self._pkt_fail = 0
         ip   = self._sender.resolved_ip if self._sender else None
 
-        if ip:
+        if self._tx_proto == "sacn":
+            where = (f"multicast {multicast_address(self._tx_sacn_universe)}"
+                     if self._tx_multicast else f"{self._v_host.get()}  ({ip})")
+            if ip or self._tx_multicast:
+                s = (f"→  {where}  ·  sACN universe {self._tx_sacn_universe}"
+                     f"  ·  {ok} pkt/s")
+                if fail:
+                    s += f"  ·  {fail} errors"
+            else:
+                s = f"✗  Cannot resolve '{self._v_host.get()}'"
+        elif ip:
             s = f"→  {self._v_host.get()}  ({ip})  ·  {ok} pkt/s"
             if fail:
                 s += f"  ·  {fail} errors"
@@ -968,8 +1042,7 @@ class App(tk.Tk):
 
     def _on_close(self) -> None:
         self._running = False
-        if self._sender:
-            self._sender.close()
+        self._close_sender()
         self.destroy()
 
 
