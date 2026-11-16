@@ -504,6 +504,9 @@ void webserver_start(void)
     cfg.max_uri_handlers   = 8;
     cfg.stack_size         = 8192;
     cfg.recv_wait_timeout  = 30;   /* seconds — allows slow firmware uploads */
+    /* When all sockets are taken (idle browser tabs, stuck clients) close the
+       least recently used one instead of resetting every new connection */
+    cfg.lru_purge_enable   = true;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK) {

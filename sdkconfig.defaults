@@ -24,3 +24,7 @@ CONFIG_UART_ISR_IN_IRAM=y
 CONFIG_FREERTOS_HZ=1000
 
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Art-Net + sACN UDP sockets, the HTTP server (7 open + listen + control) and
+# the OTA client must fit at the same time (default: 10)
+CONFIG_LWIP_MAX_SOCKETS=16
